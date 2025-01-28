@@ -41,6 +41,54 @@ def normal_quantize(x, scale, zero, maxq):
     q = torch.clamp(torch.round(x / scale) + zero, 0, maxq)
     return scale * (q - zero)
 
+@torch.no_grad()
+def robust_high_order_residual(x, mask, order=2, clamp_factor=2.5):
+    """
+    A robust variant of residual binarization that clamps outliers at each iteration.
+    x: the weight matrix (oc x ic)
+    mask: boolean tensor indicating where to apply binarization
+    order: number of residual binarization steps
+    clamp_factor: multiple of std-dev for clamping outliers
+    """
+    sum_order = torch.zeros_like(x)
+    new_matrix = x.clone() * mask
+
+    for _ in range(order):
+        # Compute the residual for this iteration
+        residual = new_matrix - sum_order
+
+        # Only consider masked elements
+        masked_x_tensor = torch.where(mask, residual, torch.tensor(float('nan'), device=residual.device))
+
+        # Compute row-wise mean and std (robust stats)
+        mean_tensor_all = torch.nanmean(masked_x_tensor, dim=1)
+        mean_tensor_all = torch.where(torch.isnan(mean_tensor_all), torch.zeros_like(mean_tensor_all), mean_tensor_all)
+
+        std_tensor_all = torch.nanstd(masked_x_tensor, dim=1)
+        std_tensor_all = torch.where(torch.isnan(std_tensor_all), torch.zeros_like(std_tensor_all), std_tensor_all)
+
+        # Center the residual around the mean
+        masked_x_tensor = masked_x_tensor - mean_tensor_all[:, None]
+
+        # Clamp outliers: anything beyond ±(clamp_factor * std)
+        clamped_x_tensor = torch.clamp(
+            masked_x_tensor,
+            min=-clamp_factor * std_tensor_all[:, None],
+            max=clamp_factor * std_tensor_all[:, None],
+        )
+
+        # Compute scale as mean(abs(.)) after clamping
+        scale_tensor_all = torch.nanmean(torch.abs(clamped_x_tensor), dim=1)
+        scale_tensor_all = torch.where(torch.isnan(scale_tensor_all), torch.zeros_like(scale_tensor_all), scale_tensor_all)
+
+        # Binarize + scale + shift
+        binary = torch.sign(clamped_x_tensor) * scale_tensor_all[:, None]
+        binary = binary + mean_tensor_all[:, None]
+
+        # Accumulate into sum_order
+        sum_order += binary * mask
+
+    return sum_order
 
 class Binarization(nn.Module):
     def __init__(self, weight, method="2bit", groupsize=-1):
@@ -61,7 +109,9 @@ class Binarization(nn.Module):
             w = w * self.scale[groupi]
             w+=w_mean
         elif self.method=="braq": # The method used in paper
-            w = high_order_residual(w, mask, order=order)  
+            w = high_order_residual(w, mask, order=order)
+        elif self.method=="robq":  # Our robust variant
+            w = robust_high_order_residual(w, mask, order=order, clamp_factor=2.5)
         elif self.method=="sign":
             w=(w>0).float()
             w*=self.scale[groupi]
