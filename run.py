@@ -286,7 +286,7 @@ if __name__ == "__main__":
             os.makedirs(save_path)
         model.save_pretrained(save_file)
 
-    for dataset in ["wikitext2", "ptb", "c4"]:
+    for dataset in args.dataset:#["wikitext2", "ptb", "c4"]:
         dataloader, testloader = get_loaders(
             dataset, seed=args.seed, seqlen=model.seqlen, model=args.model
         )

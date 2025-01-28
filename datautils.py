@@ -71,6 +71,37 @@ class TokenizerWrapper:
 
 def get_c4(nsamples, seed, seqlen, model, tokenizer):
     traindata = load_dataset(
+        'c4', 'en', split='train', streaming=True
+    )
+    valdata = load_dataset(
+        'c4', 'en', split='validation', streaming=True
+    )
+
+    random.seed(seed)
+    trainloader = []
+    for _ in range(nsamples):
+        while True:
+            sample = next(iter(traindata))
+            trainenc = tokenizer(sample['text'], return_tensors='pt')
+            if trainenc.input_ids.shape[1] > seqlen:
+                break
+        i = random.randint(0, trainenc.input_ids.shape[1] - seqlen - 1)
+        j = i + seqlen
+        inp = trainenc.input_ids[:, i:j]
+        tar = inp.clone()
+        tar[:, :-1] = -100
+        trainloader.append((inp, tar))
+
+    valenc = tokenizer(' '.join([next(iter(valdata))['text'] for _ in range(1100)]), return_tensors='pt')
+    valenc = valenc.input_ids[:, :(256 * seqlen)]
+
+    valenc = TokenizerWrapper(valenc)
+
+    return trainloader, valenc
+
+
+def get_c4_old(nsamples, seed, seqlen, model, tokenizer):
+    traindata = load_dataset(
         'allenai/c4', 'allenai--c4', data_files={'train': 'en/c4-train.00000-of-01024.json.gz'}, split='train'
     )
     valdata = load_dataset(
