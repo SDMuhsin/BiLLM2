@@ -171,7 +171,14 @@ def quant_sequential(model, dataloader, dev):
         inps, outs = outs, inps
 
     model.config.use_cache = use_cache
+'''
+    opt braq     ptb : ppl37.62 :  
+    opt robq     ptb : ppl31.48 :  
+    opt mestrobq ptb : ppl17.42 :  
 
+
+
+'''
 
 if __name__ == "__main__":
     import argparse
@@ -197,7 +204,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "low_quant_method",
         type=str,
-        choices=["xnor", "sign", "no", "2bit", "4bit", "prune", "braq",'robq'],
+        choices=["xnor", "sign", "no", "2bit", "4bit", "prune", "braq",'robq','mestrobq'],
         help="quantization method; `xnor` is the method using XNOR to adapt hardware calculation; `prune` is the method used in sparseGPTQ; braq is the method used in BiLLM",
     )
     parser.add_argument("--load_quantized", action="store_true")
@@ -286,7 +293,7 @@ if __name__ == "__main__":
             os.makedirs(save_path)
         model.save_pretrained(save_file)
 
-    for dataset in args.dataset:#["wikitext2", "ptb", "c4"]:
+    for dataset in [args.dataset]:#["wikitext2", "ptb", "c4"]:
         dataloader, testloader = get_loaders(
             dataset, seed=args.seed, seqlen=model.seqlen, model=args.model
         )
