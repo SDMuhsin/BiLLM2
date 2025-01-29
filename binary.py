@@ -193,6 +193,61 @@ def median_high_order_residual(x, mask, order=2):
     
     return sum_order
 
+@torch.no_grad()
+def orthogonal_residual(x, mask, order=2):
+    """
+    Orthogonal Residual Binarization (ORB)
+
+    This patched version handles fully masked-out rows
+    by replicating 'high_order_residual' logic—any row
+    with no unmasked elements becomes zero instead of NaN.
+    """
+
+    sum_order = torch.zeros_like(x)
+    expansions = []
+    
+    for od in range(order):
+        # Residual to approximate
+        residual = x - sum_order
+
+        # Mark unmasked elements; others = NaN
+        masked_residual = torch.where(mask, residual, torch.tensor(float('nan'), device=x.device))
+        
+        # Row-wise mean (ignoring NaNs)
+        mean_val = torch.nanmean(masked_residual, dim=1, keepdim=True)
+        # If the entire row is NaN => force that mean to 0
+        mean_val = torch.where(torch.isnan(mean_val),
+                               torch.zeros_like(mean_val),
+                               mean_val)
+        
+        # Center the residual around the mean
+        centered = masked_residual - mean_val
+        
+        # Convert all masked-out elements to 0 (not NaN)
+        centered = torch.where(mask, centered, torch.zeros_like(centered))
+
+        # Orthogonal projection against previous expansions
+        for exp in expansions:
+            dot_num = (centered * exp).mean(dim=1, keepdim=True)
+            dot_den = (exp * exp).mean(dim=1, keepdim=True) + 1e-12
+            proj = dot_num * exp / dot_den
+            centered = centered - proj
+        
+        # Row-wise scaling
+        scale_val = torch.nanmean(torch.abs(centered), dim=1, keepdim=True)
+        # If row is all zero => NaN => set to 0
+        scale_val = torch.where(torch.isnan(scale_val),
+                                torch.zeros_like(scale_val),
+                                scale_val)
+        
+        # Sign + scale + shift
+        binary = torch.sign(centered) * scale_val + mean_val
+        
+        # Update expansions & sum
+        expansions.append(binary)
+        sum_order = sum_order + binary * mask
+
+    return sum_order
 
 class Binarization(nn.Module):
     def __init__(self, weight, method="2bit", groupsize=-1):
@@ -216,6 +271,8 @@ class Binarization(nn.Module):
             w+=w_mean
         elif self.method=="braq": # The method used in paper
             w = high_order_residual(w, mask, order=order)
+        elif self.method=="orb": # Orthogonal Residual Binarization
+            w = orthogonal_residual(w, mask, order=order)
         elif self.method=="robq":  # Our robust varianti (1)
             w = robust_high_order_residual(w, mask, order=order, clamp_factor=2.5)
         elif self.method == "mestrobq":  # New robust method
