@@ -155,6 +155,45 @@ def mest_robust_residual_binarization(x, mask, order=2, kappa=1.0):
 
     return sum_order
 
+@torch.no_grad()
+def median_high_order_residual(x, mask, order=2):
+    """
+    Proposed robust residual binarization (medianbraq).
+    Uses median-based offset and scale (median absolute deviation).
+    """
+    sum_order = torch.zeros_like(x)
+    new_matrix = x.clone()
+    new_matrix = new_matrix * mask
+    for od in range(order):
+        residual = new_matrix - sum_order
+        masked_x_tensor = torch.where(mask, residual, torch.tensor(float('nan')))
+
+        # Median-based offset
+        # nanmedian returns (values, indices), so we take the .values.
+        median_tensor_all = torch.nanmedian(masked_x_tensor, dim=1).values
+        median_tensor_all = torch.where(torch.isnan(median_tensor_all),
+                                        torch.zeros_like(median_tensor_all),
+                                        median_tensor_all)
+
+        # Subtract offset
+        masked_x_tensor -= median_tensor_all[:, None]
+
+        # Scale = median of absolute values (robust to outliers)
+        abs_masked = torch.abs(masked_x_tensor)
+        scale_tensor_all = torch.nanmedian(abs_masked, dim=1).values
+        scale_tensor_all = torch.where(torch.isnan(scale_tensor_all),
+                                       torch.zeros_like(scale_tensor_all),
+                                       scale_tensor_all)
+
+        # Binarize
+        binary = torch.sign(masked_x_tensor)
+        binary *= scale_tensor_all[:, None]
+        binary += median_tensor_all[:, None]
+        sum_order = sum_order + binary*mask
+    
+    return sum_order
+
+
 class Binarization(nn.Module):
     def __init__(self, weight, method="2bit", groupsize=-1):
         super().__init__()
@@ -181,6 +220,8 @@ class Binarization(nn.Module):
             w = robust_high_order_residual(w, mask, order=order, clamp_factor=2.5)
         elif self.method == "mestrobq":  # New robust method
             w = mest_robust_residual_binarization(w, mask, order=self.order, kappa=self.kappa)
+        elif self.method == "medianbraq":  # New robust method
+            w = median_high_order_residual(w, mask, order=self.order)
         elif self.method=="sign":
             w=(w>0).float()
             w*=self.scale[groupi]
