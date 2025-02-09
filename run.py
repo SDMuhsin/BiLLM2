@@ -8,27 +8,39 @@ from binary import Binarization
 from modelutils import find_layers
 
 
-def get_model(model):
-    import torch
 
+downloads_dir = "./downloads"
+
+def get_model(model_name):
     def skip(*args, **kwargs):
         pass
 
     torch.nn.init.kaiming_uniform_ = skip
     torch.nn.init.uniform_ = skip
     torch.nn.init.normal_ = skip
-    if "opt" in model:
-        from transformers import OPTForCausalLM
-
-        model = OPTForCausalLM.from_pretrained(model, torch_dtype="auto")
-        model.seqlen = model.config.max_position_embeddings
-    elif "llama" in model:
-        from transformers import LlamaForCausalLM
-
-        model = LlamaForCausalLM.from_pretrained(model, torch_dtype="auto")
-        model.seqlen = 2048
+    
+    model_path = os.path.join(downloads_dir, f"DOWNLOAD_{model_name}")
+    
+    if os.path.exists(model_path):
+        print(f"Loading pretrained model from {model_path}")
+        model = torch.load(model_path)
+    else:
+        print(f"Downloading and saving model: {model_name}")
+        if "opt" in model_name:
+            from transformers import OPTForCausalLM
+            model = OPTForCausalLM.from_pretrained(model_name, torch_dtype="auto")
+            model.seqlen = model.config.max_position_embeddings
+        elif "llama" in model_name:
+            from transformers import LlamaForCausalLM
+            model = LlamaForCausalLM.from_pretrained(model_name, torch_dtype="auto")
+            model.seqlen = 2048
+        else:
+            raise ValueError("Unsupported model type")
+        
+        torch.save(model, model_path)
+        print(f"Model saved to {model_path}")
+    
     return model
-
 
 '''
 The function is employed to calibrate and quantize models layer by layer.
@@ -286,7 +298,7 @@ if __name__ == "__main__":
     save_title = f"{args.model}_{args.dataset}_{args.low_quant_method}_{groupsize}_{args.salient_metric}"
     save_file = "./output/" + save_title.replace("/", "_") + ".pt"
     if args.load_quantized:
-        model = get_model(save_file)
+        model = get_model(save_file) # 1 : Get Model
         model.eval()
     else: # braq
         model = get_model(args.model)
