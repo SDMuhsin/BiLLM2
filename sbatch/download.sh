@@ -7,7 +7,7 @@ models=(
     "huggyllama/llama-7b" "huggyllama/llama-13b" "huggyllama/llama-30b" "huggyllama/llama-65b"
 )
 
-datasets=("ptb" "wikitext2" "c4")
+datasets=("wikitext2" "c4" "ptb")
 
 # Iterate over each model and dataset
 for model in "${models[@]}"; do
