@@ -10,7 +10,6 @@ from modelutils import find_layers
 
 
 downloads_dir = "./downloads"
-
 def get_model(model_name):
     def skip(*args, **kwargs):
         pass
@@ -20,6 +19,7 @@ def get_model(model_name):
     torch.nn.init.normal_ = skip
     
     model_path = os.path.join(downloads_dir, f"DOWNLOAD_{model_name}")
+    os.makedirs(os.path.dirname(model_path), exist_ok=True)  # Ensure directories exist
     
     if os.path.exists(model_path):
         print(f"Loading pretrained model from {model_path}")
