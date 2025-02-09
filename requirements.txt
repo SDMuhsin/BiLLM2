@@ -5,3 +5,4 @@ transformers==4.35.0
 datasets==2.14.6
 numpy
 sentencepiece
+exceptiongroup
