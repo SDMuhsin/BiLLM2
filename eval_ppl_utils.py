@@ -1,12 +1,38 @@
 import time
-
+import fcntl
 import torch
 import torch.nn as nn
+import json
 
+
+
+EVAL_SAVE_FILE = "./output/GLOBAL_PPL.json"
+
+def save_ppl_result(save_title, ppl_value):
+    """Safely save the PPL result into a shared JSON file with file locking."""
+    os.makedirs(os.path.dirname(EVAL_SAVE_FILE), exist_ok=True)  # Ensure directory exists
+
+    # Ensure JSON file exists
+    if not os.path.exists(EVAL_SAVE_FILE):
+        with open(EVAL_SAVE_FILE, "w") as f:
+            json.dump({}, f)  # Initialize with empty dict
+
+    # Read, update, and write JSON with file locking
+    with open(EVAL_SAVE_FILE, "r+") as f:
+        try:
+            fcntl.flock(f, fcntl.LOCK_EX)  # Acquire exclusive lock
+            data = json.load(f)  # Read existing JSON
+            data[save_title] = ppl_value.item()  # Add new PPL result
+
+            f.seek(0)  # Reset file pointer
+            json.dump(data, f, indent=4)  # Write updated data
+            f.truncate()  # Remove any leftover content
+        finally:
+            fcntl.flock(f, fcntl.LOCK_UN)  # Release lock
 
 
 @torch.no_grad()
-def llama_eval(model, testenc, dev,  dataset: str, log_wandb: bool = False):
+def llama_eval(model, testenc, dev,  dataset: str, log_wandb: bool = False, save_title= 'UNNAMED_LLAMA'):
     print("Evaluating ...")
 
     testenc = testenc.input_ids
@@ -84,11 +110,13 @@ def llama_eval(model, testenc, dev,  dataset: str, log_wandb: bool = False):
         nlls.append(neg_log_likelihood)
     ppl = torch.exp(torch.stack(nlls).sum() / (nsamples * model.seqlen))
     print(f"Perplexity: {ppl.item():3f}")
-
+	save_ppl_result(save_title,ppl.item())    
+    
     model.config.use_cache = use_cache
 
 @torch.no_grad()
-def opt_eval(model, testenc, dev, dataset: str, log_wandb: bool = False):
+def opt_eval(model, testenc, dev, dataset: str, log_wandb: bool = False, save_title = 'UNNAMED_OPT'):
+
     print('Evaluating ...')
 
     testenc = testenc.input_ids
@@ -179,5 +207,6 @@ def opt_eval(model, testenc, dev, dataset: str, log_wandb: bool = False):
     ppl = torch.exp(torch.stack(nlls).sum() / (nsamples * model.seqlen))
     print(f"Perplexity: {ppl.item():3f}")
     print({f'{dataset}/perplexity': ppl.item()})
-
+	
+    save_ppl_result(save_title,pplt.item())
     model.config.use_cache = use_cache

@@ -79,17 +79,17 @@ def quant_sequential(model, dataloader, dev):
 
     dtype = next(iter(model.parameters())).dtype
     inps = torch.zeros(
-        (args.nsamples, model.seqlen, model.config.hidden_size), dtype=dtype, device=dev
+        (args.nsamples, model.seqlen, model.config.hidden_size), dtype=dtype, device=dev # To capture attention mask corresponding to each sample for one layer?
     )
     cache = {"i": 0, "attention_mask": None}
 
-    class Catcher(nn.Module):
+    class Catcher(nn.Module): # Cache["i"] stores index of attention mask, and Cache["attention_mask"] stores attention mask itself
         def __init__(self, module):
             super().__init__()
             self.module = module
 
         def forward(self, inp, **kwargs):
-            inps[cache["i"]] = inp
+            inps[cache["i"]] = inp # inputs holds a key for each attention mask
             cache["i"] += 1
             cache["attention_mask"] = kwargs["attention_mask"]
             raise ValueError
@@ -97,7 +97,8 @@ def quant_sequential(model, dataloader, dev):
     layers[0] = Catcher(layers[0])
     for batch in dataloader:
         try:
-            model(batch[0].to(dev))
+            model(batch[0].to(dev)) # Pass first batch through the model
+            # This should capture attention masks into inps
         except ValueError:
             pass
     layers[0] = layers[0].module
@@ -127,9 +128,10 @@ def quant_sequential(model, dataloader, dev):
     print("Ready.")
     
     for i in range(len(layers)):
+
         layer = layers[i].to(dev)
 
-        subset = find_layers(layer)
+        subset = find_layers(layer) # Just returns all modules in layer i?
 
         gptq = {}
         for name in subset:
@@ -141,13 +143,13 @@ def quant_sequential(model, dataloader, dev):
                 subset[name].weight,
                 method=args.low_quant_method,
                 groupsize=groupsize,
-            )
+            ) # Quantizer for each module of layer i
             gptq[name] = BRAGPTQ(
                 subset[name],
                 braq_quantizer,
                 salient_metric=args.salient_metric,
                 disable_gptq=args.disable_gptq,
-            )
+            ) #?
 
         def add_batch(name):
             def tmp(_, inp, out):
@@ -336,9 +338,9 @@ if __name__ == "__main__":
         print(dataset)
         if "opt" in args.model:
             from eval_ppl_utils import opt_eval
-
-            opt_eval(model, testloader, device, dataset, args.log_wandb)
+            
+            opt_eval(model, testloader, device, dataset, args.log_wandb, save_title)
         elif "llama" in args.model:
             from eval_ppl_utils import llama_eval
 
-            llama_eval(model, testloader, device, dataset, args.log_wandb)
+            llama_eval(model, testloader, device, dataset, args.log_wandb, save_title)
