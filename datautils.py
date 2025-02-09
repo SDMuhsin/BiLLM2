@@ -11,21 +11,35 @@ def set_seed(seed):
     np.random.seed(seed)
     torch.random.manual_seed(seed)
 
+downloads_dir = "./downloads"
+
 '''
 Generate tokenizer and return it to preload datasets by converting them to embedded vectors instead of natural words
 '''
-def get_tokenizer(model):
-    if "llama" in model.lower():
-        tokenizer = LlamaTokenizer.from_pretrained(model, use_fast=False)
-        # fix for transformer 4.28.0.dev0 compatibility
-        if tokenizer.bos_token_id != 1 or tokenizer.eos_token_id != 2:
-            try:
-                tokenizer.bos_token_id = 1
-                tokenizer.eos_token_id = 2
-            except AttributeError:
-                pass
+def get_tokenizer(model_name):
+    tokenizer_path = os.path.join(downloads_dir, f"DOWNLOAD_{model_name}_tokenizer")
+    os.makedirs(os.path.dirname(tokenizer_path), exist_ok=True)  # Ensure directories exist
+    
+    if os.path.exists(tokenizer_path):
+        print(f"Loading tokenizer from {tokenizer_path}")
+        tokenizer = torch.load(tokenizer_path)
     else:
-        tokenizer = AutoTokenizer.from_pretrained(model, use_fast=False)
+        print(f"Downloading tokenizer for {model_name}")
+        if "llama" in model_name.lower():
+            tokenizer = LlamaTokenizer.from_pretrained(model_name, use_fast=False)
+            # Fix for transformer 4.28.0.dev0 compatibility
+            if tokenizer.bos_token_id != 1 or tokenizer.eos_token_id != 2:
+                try:
+                    tokenizer.bos_token_id = 1
+                    tokenizer.eos_token_id = 2
+                except AttributeError:
+                    pass
+        else:
+            tokenizer = AutoTokenizer.from_pretrained(model_name, use_fast=False)
+        
+        torch.save(tokenizer, tokenizer_path)
+        print(f"Tokenizer saved to {tokenizer_path}")
+    
     return tokenizer
 
 def get_wikitext2(nsamples, seed, seqlen, model, tokenizer):
