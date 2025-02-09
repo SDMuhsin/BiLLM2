@@ -290,6 +290,9 @@ if __name__ == "__main__":
     parser.add_argument(
         "--log_wandb", action="store_true", help="Whether to log to wandb."
     )
+    parser.add_argument(
+        "--just_download", action="store_true"
+    )
 
     args = parser.parse_args()
     groupsize = args.blocksize
@@ -311,8 +314,14 @@ if __name__ == "__main__":
             model=args.model,
             seqlen=model.seqlen,
         )
+
+        if(args.just_download):
+            print(f"Just download flag set, exiting")
+            exit()
         quant_sequential(model, dataloader, device)
         print("quantization time:", time.time() - tick, "s")
+
+
 
     if args.save:
         save_path = os.path.dirname(save_file)
