@@ -17,24 +17,24 @@ def part_mean(tensor, op='-'):
 @torch.no_grad()
 def high_order_residual(x, mask, order=2):
     sum_order = torch.zeros_like(x)
-    new_matrix = x.clone()
-    new_matrix = new_matrix * mask
+    new_matrix = x.clone() # Keep a copy of the original weight matrix x
+    new_matrix = new_matrix * mask # Pick out only salient columsn
     global index
     index += 1
     for od in range(order):
         residual = new_matrix - sum_order
-        masked_x_tensor = torch.where(mask, residual, torch.tensor(float('nan')))
+        masked_x_tensor = torch.where(mask, residual, torch.tensor(float('nan'))) # Use only valid positions of residual (invalids are marked with nan)
 
-        mean_tensor_all = torch.nanmean(masked_x_tensor, dim=1)
+        mean_tensor_all = torch.nanmean(masked_x_tensor, dim=1) #  Row wise mean of residual
         mean_tensor_all = torch.where(torch.isnan(mean_tensor_all), torch.zeros_like(mean_tensor_all), mean_tensor_all)
-        masked_x_tensor -= mean_tensor_all[:, None]
-        scale_tensor_all = torch.nanmean(torch.abs(masked_x_tensor), dim=1)
+        masked_x_tensor -= mean_tensor_all[:, None] # Subtracts mean from each row (only valid rows) : Centers all elements at 0
+        scale_tensor_all = torch.nanmean(torch.abs(masked_x_tensor), dim=1) # Gets averagei absolute value, row wise = estimate of alpha
         scale_tensor_all = torch.where(torch.isnan(scale_tensor_all), torch.zeros_like(scale_tensor_all), scale_tensor_all)
 
         binary= torch.sign(masked_x_tensor)
-        binary *= scale_tensor_all[:, None]
+        binary *= scale_tensor_all[:, None] # Rescale (alpha * B)
         binary += mean_tensor_all[:, None]
-        sum_order = sum_order + binary*mask
+        sum_order = sum_order + binary*mask # Add X = ... + Bk * alpha_k
     
     return sum_order
 
@@ -249,6 +249,279 @@ def orthogonal_residual(x, mask, order=2):
 
     return sum_order
 
+@torch.no_grad()
+def weighted_high_order_residual(x, mask, order=2):
+    """
+    Weighted Residual Binarization (WHOR):
+    Iteratively approximates 'x' with a sum of binary expansions, 
+    weighting errors by their magnitude so that large residuals 
+    get reduced more aggressively.
+    
+    The final bit cost is the same as standard residual binarization:
+    we do 'order' expansions, each storing one mean + one scale + sign-bits.
+    """
+    sum_order = torch.zeros_like(x)
+    new_matrix = x.clone()
+    new_matrix = new_matrix * mask  # only operate within the valid region
+
+    for od in range(order):
+        # 1) Compute residual
+        residual = new_matrix - sum_order
+
+        # 2) Mask out invalid positions
+        masked_x_tensor = torch.where(mask, residual, torch.tensor(float('nan'), device=x.device))
+
+        # 3) Define weights = abs(residual). 
+        #    This emphasizes elements with large residuals.
+        w = torch.abs(masked_x_tensor)
+
+        # 4) Weighted mean calculation: 
+        #    mean = (sum_i w_i * r_i) / (sum_i w_i)
+        numerator = torch.nansum(w * masked_x_tensor, dim=1, keepdim=True)
+        denominator = torch.nansum(w, dim=1, keepdim=True) + 1e-8
+        mean_tensor_all = numerator / denominator
+
+        # 5) Subtract the mean from residual
+        masked_x_tensor = masked_x_tensor - mean_tensor_all
+
+        # 6) Weighted scale:
+        #    scale = (sum_i w_i * |r_i - mean|) / (sum_i w_i)
+        scale_numerator = torch.nansum(w * torch.abs(masked_x_tensor), dim=1, keepdim=True)
+        scale_tensor_all = scale_numerator / denominator
+
+        # 7) Form the binary expansion: sign + scale + mean
+        binary = torch.sign(masked_x_tensor) * scale_tensor_all
+        binary = binary + mean_tensor_all
+
+        # 8) Accumulate into sum_order
+        sum_order = sum_order + binary * mask
+
+    return sum_order
+
+@torch.no_grad()
+def attenuated_residual(x, mask, order=2, gamma=0.5):
+    """
+    Attenuated Residual Binarization (ARB)
+    - Similar to `high_order_residual` (braq)
+    - Each iteration's binary correction is damped by a factor gamma.
+    - Retains 1-bit expansions and same memory overhead as braq.
+    """
+    sum_order = torch.zeros_like(x)
+    new_matrix = x.clone()
+    new_matrix = new_matrix * mask
+
+    for od in range(order):
+        residual = new_matrix - sum_order
+        # Mask out the elements
+        masked_x_tensor = torch.where(mask, residual, torch.tensor(float('nan'), device=x.device))
+
+        # Compute row-wise mean
+        mean_tensor_all = torch.nanmean(masked_x_tensor, dim=1)
+        mean_tensor_all = torch.where(torch.isnan(mean_tensor_all), torch.zeros_like(mean_tensor_all), mean_tensor_all)
+
+        # Center
+        masked_x_tensor -= mean_tensor_all[:, None]
+
+        # Compute row-wise average absolute deviation for scale
+        scale_tensor_all = torch.nanmean(torch.abs(masked_x_tensor), dim=1)
+        scale_tensor_all = torch.where(torch.isnan(scale_tensor_all), torch.zeros_like(scale_tensor_all), scale_tensor_all)
+
+        # Sign + scale + shift
+        binary = torch.sign(masked_x_tensor)
+        binary *= scale_tensor_all[:, None]
+        binary += mean_tensor_all[:, None]
+
+        # Instead of subtracting full `binary`, we only subtract gamma * binary
+        # and accumulate the partial correction
+        sum_order = sum_order + gamma * binary * mask
+
+    return sum_order
+@torch.no_grad()
+def balanced_high_order_residual(x, mask, order=2):
+    """
+    Balanced Residual Binarization in multiple passes.
+    Enforces ~0 net sum in each pass by balancing +1/−1.
+    """
+    sum_order = torch.zeros_like(x)
+    new_matrix = x.clone()
+    new_matrix = new_matrix * mask  # only keep valid weights
+
+    for od in range(order):
+        residual = new_matrix - sum_order
+        # masked view: ignore positions where mask=0
+        masked_residual = torch.where(mask, residual, torch.tensor(float('nan'), device=x.device))
+
+        # Compute row-wise scale (same as braq's L2-optimal alpha)
+        alpha = torch.nanmean(torch.abs(masked_residual), dim=1)
+        alpha = torch.where(torch.isnan(alpha), torch.zeros_like(alpha), alpha)  # safe fallback
+
+        # Balanced sign step per row
+        B = torch.zeros_like(masked_residual)
+
+        for i in range(B.shape[0]):
+            row = masked_residual[i]
+            valid_mask = ~torch.isnan(row)
+            valid_vals = row[valid_mask]
+
+            if valid_vals.numel() == 0:
+                continue
+
+            sorted_vals, sorted_idx = torch.sort(valid_vals)
+            n_valid = len(sorted_vals)
+            half = n_valid // 2  # integer division
+
+            # Ensure `torch.arange()` is created on the same device as `row`
+            row_indices = torch.arange(len(row), device=row.device)[valid_mask][sorted_idx]
+
+            B[i, row_indices[:half]] = -1
+            B[i, row_indices[half:]] = 1
+
+        # Convert B from masked_residual shape to a real tensor (NaN->0 for masked positions)
+        B = torch.where(mask, B, torch.zeros_like(B))
+
+        # Weighted update = alpha_i * B
+        alpha = alpha.view(-1, 1)
+        sum_order = sum_order + alpha * B
+
+    return sum_order
+@torch.no_grad()
+def joint_residual_binarization(x, mask, iters=3):
+    """
+    Jointly refines two binary expansions (B1, B2) with scales (alpha1, alpha2)
+    by coordinate-descent style updates, seeking to minimize || x - alpha1 B1 - alpha2 B2 ||^2
+    without adding new storage. Returns final sum_order = alpha1*B1 + alpha2*B2.
+    """
+    # 1) Initialize with standard first-pass binarization
+    x_local = x.clone() * mask
+    # B1, alpha1
+    mean1 = torch.nanmean(torch.where(mask, x_local, torch.tensor(float('nan'))), dim=1)
+    mean1 = torch.where(torch.isnan(mean1), torch.zeros_like(mean1), mean1)
+    x_shifted = x_local - mean1[:, None]
+    alpha1 = torch.nanmean(torch.abs(x_shifted), dim=1)
+    alpha1 = torch.where(torch.isnan(alpha1), torch.zeros_like(alpha1), alpha1)
+    B1 = torch.sign(x_shifted)
+
+    # 2) Initialize B2, alpha2 from the residual
+    R = x_local - (B1 * alpha1[:, None])
+    mean2 = torch.nanmean(torch.where(mask, R, torch.tensor(float('nan'))), dim=1)
+    mean2 = torch.where(torch.isnan(mean2), torch.zeros_like(mean2), mean2)
+    R_shifted = R - mean2[:, None]
+    alpha2 = torch.nanmean(torch.abs(R_shifted), dim=1)
+    alpha2 = torch.where(torch.isnan(alpha2), torch.zeros_like(alpha2), alpha2)
+    B2 = torch.sign(R_shifted)
+
+    # 3) Iterative refinement
+    #    Re-fit B1 once B2 is known, then re-fit B2, etc.
+    for _ in range(iters):
+        # Recompute residual ignoring B2
+        R1 = x_local - (B2 * alpha2[:, None])
+        # Fit B1, alpha1 again
+        mean1 = torch.nanmean(torch.where(mask, R1, torch.tensor(float('nan'))), dim=1)
+        mean1 = torch.where(torch.isnan(mean1), torch.zeros_like(mean1), mean1)
+        R1_shifted = R1 - mean1[:, None]
+        alpha1 = torch.nanmean(torch.abs(R1_shifted), dim=1)
+        alpha1 = torch.where(torch.isnan(alpha1), torch.zeros_like(alpha1), alpha1)
+        B1 = torch.sign(R1_shifted)
+
+        # Now re-fit B2 from the new B1
+        R2 = x_local - (B1 * alpha1[:, None])
+        mean2 = torch.nanmean(torch.where(mask, R2, torch.tensor(float('nan'))), dim=1)
+        mean2 = torch.where(torch.isnan(mean2), torch.zeros_like(mean2), mean2)
+        R2_shifted = R2 - mean2[:, None]
+        alpha2 = torch.nanmean(torch.abs(R2_shifted), dim=1)
+        alpha2 = torch.where(torch.isnan(alpha2), torch.zeros_like(alpha2), alpha2)
+        B2 = torch.sign(R2_shifted)
+
+    # Final combination
+    sum_order = (B1 * alpha1[:, None] + mean1[:, None]) \
+              + (B2 * alpha2[:, None] + mean2[:, None])
+    sum_order = sum_order * mask
+    return sum_order
+
+@torch.no_grad()
+def coupled_residual_binarization(x, mask, order=2):
+    """
+    Performs a two-binary-expansion approximation (like braq) but
+    co-optimizes the scale factors alpha_1, alpha_2 in closed form.
+
+    x:     (oc, ic) weight matrix
+    mask:  boolean mask with same shape as x
+    order: number of expansions (we only implement 2 expansions here)
+
+    Returns: sum_order -> final approximate binarized matrix
+    """
+    # We will do this row by row. 
+    # For each row, we:
+    #   1) Subtract mean.
+    #   2) Get B1, alpha_1 from sign/average of magnitude.
+    #   3) Form residual, get B2, alpha_2 similarly.
+    #   4) Solve for alpha_1, alpha_2 simultaneously in closed form.
+    #   5) Re-add the mean.
+    
+    # Make a clone of x that we will modify
+    new_matrix = x.clone()
+    new_matrix = new_matrix * mask  # only consider valid entries
+
+    # We'll accumulate the final approximation in sum_order
+    sum_order = torch.zeros_like(new_matrix)
+
+    oc, ic = new_matrix.shape
+
+    # Row-wise processing
+    for row_idx in range(oc):
+        # Extract row and mask
+        row = new_matrix[row_idx, :]
+        row_mask = mask[row_idx, :]
+        
+        # If nothing is masked-in, skip
+        if not torch.any(row_mask):
+            continue
+        
+        # Grab just the valid elements for the masked row
+        row_vals = row[row_mask]
+        
+        # 1) Subtract mean
+        row_mean = row_vals.mean()
+        centered = row_vals - row_mean
+        
+        # 2) First pass: B1, alpha_1
+        B1 = torch.sign(centered)
+        alpha_1 = centered.abs().mean()
+        
+        # 3) Residual, second pass B2, alpha_2
+        r = centered - alpha_1 * B1
+        B2 = torch.sign(r)
+        alpha_2 = r.abs().mean()
+        
+        if order >= 2:
+            # 4) Solve for alpha_1, alpha_2 in closed form
+            #    We define:
+            #       d = # valid elements
+            #       c12 = sum(B1 * B2)
+            #       c1w = sum(centered * B1)
+            #       c2w = sum(centered * B2)
+            d = float(row_vals.numel())
+            c12 = torch.sum(B1 * B2).item()
+            c1w = torch.sum(centered * B1).item()
+            c2w = torch.sum(centered * B2).item()
+            
+            det = d*d - c12*c12
+            if abs(det) > 1e-12:
+                alpha_1_new = ( c1w*d - c2w*c12 ) / det
+                alpha_2_new = ( c2w*d - c1w*c12 ) / det
+                # alpha should be non-negative, so we clamp to >= 0
+                alpha_1 = max(alpha_1_new, 0.0)
+                alpha_2 = max(alpha_2_new, 0.0)
+
+        # 5) Reconstruct final row approximation
+        approx = row_mean + alpha_1 * B1 + alpha_2 * B2
+        
+        # Place this approximation back into sum_order at masked positions
+        out_row = sum_order[row_idx, :]
+        out_row[row_mask] = approx
+
+    return sum_order
+
 class Binarization(nn.Module):
     def __init__(self, weight, method="2bit", groupsize=-1):
         super().__init__()
@@ -271,8 +544,18 @@ class Binarization(nn.Module):
             w+=w_mean
         elif self.method=="braq": # The method used in paper
             w = high_order_residual(w, mask, order=order)
+        elif self.method=="jrb":  # <-- NEW PROPOSAL
+            w = joint_residual_binarization(w, mask, iters=order)
+        elif self.method=="crb":  # <-- NEW PROPOSAL
+            w = coupled_residual_binarization(w, mask, order=order)
+        elif self.method=="bhor": # T
+            w = balanced_high_order_residual(w, mask, order=order)
         elif self.method=="orb": # Orthogonal Residual Binarization
             w = orthogonal_residual(w, mask, order=order)
+        elif self.method=="arb":
+            w = attenuated_residual(w, mask, order=order, gamma=0.8)
+        elif self.method=="whor": # Weighted High Order Residual
+            w = weighted_high_order_residual(w, mask, order=order)
         elif self.method=="robq":  # Our robust varianti (1)
             w = robust_high_order_residual(w, mask, order=order, clamp_factor=2.5)
         elif self.method == "mestrobq":  # New robust method

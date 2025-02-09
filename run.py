@@ -177,10 +177,22 @@ def quant_sequential(model, dataloader, dev):
     opt mestrobq   ptb : ppl17.42 :  
     opt medianbraq ptb : ppl700   :
     opt orb        ptb : ppl6000  :
-
+    opt whor       ptb : ppl1000  :
+    opt arb   arb(0.5) : ppl500   :
+    opt arb   arb(0.9) : ppl33.39 :
+    opt arb   arb(0.8) : ppl45 :
+    opt crb            : ppl17.32 :
 
     llama braq     ptb : ppl97 
     llama mestrobq ptb : ppl52.6
+    llama crb      ptb : pp55
+
+    
+    opt braq  wikitext : ppl41
+    opt crb   wikitext : ppl12
+    
+    llama braq     wikitext  : pp18
+
 '''
 
 if __name__ == "__main__":
@@ -207,7 +219,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "low_quant_method",
         type=str,
-        choices=["xnor", "sign", "no", "2bit", "4bit", "prune", "braq",'robq','mestrobq','medianbraq','orb'],
+        choices=["xnor", "sign", "no", "2bit", "4bit", "prune", "braq",'robq','mestrobq','medianbraq','orb','whor','arb','bhor','jrb','crb'],
         help="quantization method; `xnor` is the method using XNOR to adapt hardware calculation; `prune` is the method used in sparseGPTQ; braq is the method used in BiLLM",
     )
     parser.add_argument("--load_quantized", action="store_true")
