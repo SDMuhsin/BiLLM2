@@ -309,6 +309,7 @@ if __name__ == "__main__":
         model = get_model(args.model)
         model.eval()
         tick = time.time()
+
         dataloader, testloader = get_loaders(
             args.dataset,
             nsamples=args.nsamples,
