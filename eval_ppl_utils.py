@@ -4,6 +4,7 @@ import torch
 import torch.nn as nn
 import json
 
+import os
 
 
 EVAL_SAVE_FILE = "./output/GLOBAL_PPL.json"
@@ -110,8 +111,8 @@ def llama_eval(model, testenc, dev,  dataset: str, log_wandb: bool = False, save
         nlls.append(neg_log_likelihood)
     ppl = torch.exp(torch.stack(nlls).sum() / (nsamples * model.seqlen))
     print(f"Perplexity: {ppl.item():3f}")
-	save_ppl_result(save_title,ppl.item())    
-    
+
+    save_ppl_result( f"./output/{save_title}.json" ,ppl) 
     model.config.use_cache = use_cache
 
 @torch.no_grad()
@@ -208,5 +209,6 @@ def opt_eval(model, testenc, dev, dataset: str, log_wandb: bool = False, save_ti
     print(f"Perplexity: {ppl.item():3f}")
     print({f'{dataset}/perplexity': ppl.item()})
 	
-    save_ppl_result(save_title,pplt.item())
+    save_ppl_result(f"./output/{save_title}.json",ppl)
+
     model.config.use_cache = use_cache
