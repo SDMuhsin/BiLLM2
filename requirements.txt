@@ -4,3 +4,5 @@ datasets==2.14.6
 numpy
 sentencepiece
 exceptiongroup
+lm_eva
+bitsandbytes
