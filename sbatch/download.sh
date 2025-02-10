@@ -4,10 +4,10 @@
 models=(
     "facebook/opt-1.3B" "facebook/opt-2.7B" "facebook/opt-6.7b" 
     "facebook/opt-13b" "facebook/opt-30b" "facebook/opt-66b"
-    "huggyllama/llama-7b" "huggyllama/llama-13b" "huggyllama/llama-30b" "huggyllama/llama-65b"
+    #"huggyllama/llama-7b" "huggyllama/llama-13b" "huggyllama/llama-30b" "huggyllama/llama-65b"
 )
 
-datasets=("wikitext2" "c4" "ptb")
+datasets=("wikitext2" "ptb") #c4
 
 # Iterate over each model and dataset
 for model in "${models[@]}"; do

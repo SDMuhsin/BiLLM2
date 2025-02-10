@@ -28,11 +28,11 @@ def get_model(model_name):
         print(f"Downloading and saving model: {model_name}")
         if "opt" in model_name:
             from transformers import OPTForCausalLM
-            model = OPTForCausalLM.from_pretrained(model_name, torch_dtype="auto")
+            model = OPTForCausalLM.from_pretrained(model_name, torch_dtype="auto",cache_dir=None)
             model.seqlen = model.config.max_position_embeddings
         elif "llama" in model_name:
             from transformers import LlamaForCausalLM
-            model = LlamaForCausalLM.from_pretrained(model_name, torch_dtype="auto")
+            model = LlamaForCausalLM.from_pretrained(model_name, torch_dtype="auto",cache_dir=None)
             model.seqlen = 2048
         else:
             raise ValueError("Unsupported model type")
