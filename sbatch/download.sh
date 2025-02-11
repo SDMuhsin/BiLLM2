@@ -1,5 +1,8 @@
 #!/bin/bash
 
+export TRANSFORMERS_CACHE="./downloads"
+export HF_HOME="./downloads"
+
 # Define arrays for models and datasets
 models=(
     "facebook/opt-1.3B" "facebook/opt-2.7B" "facebook/opt-6.7b" 
