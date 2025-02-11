@@ -8,7 +8,7 @@ from high_quant import HighQuantizer
 from low_quant import LowQuantizer
 from modelutils import find_layers
 
-downloads_dir = "./downloads"
+downloads_dir = "./../downloads"
 def get_model(model_name):
     def skip(*args, **kwargs):
         pass
