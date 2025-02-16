@@ -30,7 +30,7 @@ def high_order_residual(x, mask, order=2):
         masked_x_tensor -= mean_tensor_all[:, None] # Subtracts mean from each row (only valid rows) : Centers all elements at 0
         scale_tensor_all = torch.nanmean(torch.abs(masked_x_tensor), dim=1) # Gets averagei absolute value, row wise = estimate of alpha
         scale_tensor_all = torch.where(torch.isnan(scale_tensor_all), torch.zeros_like(scale_tensor_all), scale_tensor_all)
-
+        
         binary= torch.sign(masked_x_tensor)
         binary *= scale_tensor_all[:, None] # Rescale (alpha * B)
         binary += mean_tensor_all[:, None]
@@ -439,7 +439,9 @@ def joint_residual_binarization(x, mask, iters=3):
     return sum_order
 
 @torch.no_grad()
-def coupled_residual_binarization(x, mask, order=2):
+def D_coupled_residual_binarization(x, mask, order=2):
+
+    print("Order = ", order)
     """
     Performs a two-binary-expansion approximation (like braq) but
     co-optimizes the scale factors alpha_1, alpha_2 in closed form.
@@ -522,6 +524,1128 @@ def coupled_residual_binarization(x, mask, order=2):
 
     return sum_order
 
+index = 0
+
+@torch.no_grad()
+def coupled_residual_binarization(x, mask, order=2):
+    """
+    A unified binarization function that:
+      - For order == 1: Performs a single-pass binarization (original simple approach).
+      - For order >= 2: Performs a coupled two-expansion binarization (new approach),
+        which jointly solves for the two scale factors.
+    """
+    global index
+    index += 1
+
+    # We'll always create sum_order and clone x
+    sum_order = torch.zeros_like(x)
+    new_matrix = x.clone()
+    new_matrix = new_matrix * mask
+
+    # ---------------------------
+    # Case 1: order == 1
+    # ---------------------------
+    if order == 1:
+        # Exactly the old single‐pass binarization
+        residual = new_matrix - sum_order
+        # Keep only valid positions
+        masked_x_tensor = torch.where(mask, residual, torch.tensor(float('nan'), device=residual.device))
+
+        # Row-wise mean
+        mean_tensor_all = torch.nanmean(masked_x_tensor, dim=1)
+        mean_tensor_all = torch.where(
+            torch.isnan(mean_tensor_all),
+            torch.zeros_like(mean_tensor_all),
+            mean_tensor_all
+        )
+
+        # Subtract row-wise mean
+        masked_x_tensor = masked_x_tensor - mean_tensor_all[:, None]
+
+        # Row-wise scale = average absolute value
+        scale_tensor_all = torch.nanmean(torch.abs(masked_x_tensor), dim=1)
+        scale_tensor_all = torch.where(
+            torch.isnan(scale_tensor_all),
+            torch.zeros_like(scale_tensor_all),
+            scale_tensor_all
+        )
+
+        # Binary = sign(masked_x_tensor)
+        binary = torch.sign(masked_x_tensor)
+        # Multiply by alpha
+        binary *= scale_tensor_all[:, None]
+        # Then add back the row mean
+        binary += mean_tensor_all[:, None]
+
+        # Add to sum_order for final approximation
+        sum_order = sum_order + binary * mask
+
+        return sum_order
+
+    # ---------------------------
+    # Case 2: order == 2
+    # ---------------------------
+    else:
+        """
+        Coupled two-expansion binarization:
+          w ~ alpha1 * B1 + alpha2 * B2 + row_mean
+        with alpha1, alpha2 solved jointly.
+        """
+
+        oc, ic = new_matrix.shape
+
+        for row_idx in range(oc):
+            row_mask = mask[row_idx, :]
+            if not torch.any(row_mask):
+                # If mask is all false in this row, skip
+                continue
+
+            row_vals = new_matrix[row_idx, row_mask]
+
+            # 1) Subtract row mean
+            row_mean = row_vals.mean()
+            centered = row_vals - row_mean
+
+            # 2) First expansion: B1, alpha1
+            B1 = torch.sign(centered)
+            alpha1 = centered.abs().mean()
+
+            # 3) Second expansion: B2, alpha2 w.r.t. residual
+            r = centered - alpha1 * B1
+            B2 = torch.sign(r)
+            alpha2 = r.abs().mean()
+
+            # 4) Solve alpha1, alpha2 in closed form simultaneously
+            #    Minimizing || centered - alpha1 B1 - alpha2 B2 ||^2
+            d = float(row_vals.numel())
+            c12 = torch.sum(B1 * B2).item()
+            c1w = torch.sum(centered * B1).item()
+            c2w = torch.sum(centered * B2).item()
+
+            det = d * d - c12 * c12
+            if abs(det) > 1e-12:
+                # Solve the 2x2 linear system for alpha1, alpha2
+                alpha1_new = ( c1w * d - c2w * c12 ) / det
+                alpha2_new = ( c2w * d - c1w * c12 ) / det
+                # Constrain to be non-negative
+                alpha1 = max(alpha1_new, 0.0)
+                alpha2 = max(alpha2_new, 0.0)
+
+            # 5) Final approximation for that row
+            approx_row = row_mean + alpha1 * B1 + alpha2 * B2
+            
+            print(f"[ROW = {row_idx}] : alpha_1 : ", alpha1)
+            print(f"[ROW = {row_idx}] : alpha_2 : ", alpha2)
+            # Put it back into sum_order
+            sum_order[row_idx, row_mask] = approx_row
+
+        return sum_order
+
+@torch.no_grad()
+def coupled_residual_binarization_stable(x, mask, order=2, lam=1e-5):
+    """
+    A unified binarization function with Tikhonov stabilization for the 2-expansion case.
+
+    Args:
+      x (tensor): weight matrix, shape (oc, ic)
+      mask (tensor, bool): True where weights are to be binarized, False otherwise
+      order (int): 
+         - 1 => single-pass binarization: w ~ alpha * sign(w - mean)
+         - >=2 => two-expansion binarization with Tikhonov-stabilized
+                  closed-form for alpha1, alpha2
+      lam (float): Tikhonov regularization strength (rho).
+                   By default 1e-5 is used; 
+                   you may tune this if alphas are still 0 or negative too frequently.
+
+    Returns:
+      sum_order (tensor): the binarized approximation of x
+    """
+    # We'll always create sum_order and clone x
+    sum_order = torch.zeros_like(x)
+    new_matrix = x.clone()
+    new_matrix = new_matrix * mask
+
+    # A small global index if needed
+    # (optional, matching your existing pattern)
+    global index
+    index += 1
+
+    # ---------------------------
+    # Case 1: order == 1
+    # ---------------------------
+    if order == 1:
+        # Exactly the old single-pass binarization
+        residual = new_matrix - sum_order
+        # Keep only valid positions
+        masked_x_tensor = torch.where(
+            mask, 
+            residual, 
+            torch.tensor(float('nan'), device=residual.device)
+        )
+
+        # Row-wise mean
+        mean_tensor_all = torch.nanmean(masked_x_tensor, dim=1)
+        mean_tensor_all = torch.where(
+            torch.isnan(mean_tensor_all),
+            torch.zeros_like(mean_tensor_all),
+            mean_tensor_all
+        )
+
+        # Subtract row-wise mean
+        masked_x_tensor = masked_x_tensor - mean_tensor_all[:, None]
+
+        # Row-wise scale = average absolute value
+        scale_tensor_all = torch.nanmean(torch.abs(masked_x_tensor), dim=1)
+        scale_tensor_all = torch.where(
+            torch.isnan(scale_tensor_all),
+            torch.zeros_like(scale_tensor_all),
+            scale_tensor_all
+        )
+
+        # Binary = sign(masked_x_tensor)
+        binary = torch.sign(masked_x_tensor)
+        # Multiply by alpha
+        binary *= scale_tensor_all[:, None]
+        # Then add back the row mean
+        binary += mean_tensor_all[:, None]
+
+        # Add to sum_order for final approximation
+        sum_order = sum_order + binary * mask
+
+        return sum_order
+
+    # ---------------------------
+    # Case 2: order >= 2
+    # ---------------------------
+    else:
+        """
+        Coupled two-expansion binarization:
+          w ~ alpha1 * B1 + alpha2 * B2 + row_mean
+        with alpha1, alpha2 solved in closed form 
+        plus Tikhonov (ridge) stabilization term:
+          + lam * (alpha1^2 + alpha2^2).
+        """
+        oc, ic = new_matrix.shape
+
+        for row_idx in range(oc):
+            row_mask = mask[row_idx, :]
+            if not torch.any(row_mask):
+                # If mask is all false in this row, skip
+                continue
+
+            row_vals = new_matrix[row_idx, row_mask]
+
+            # (1) Subtract row mean
+            row_mean = row_vals.mean()
+            centered = row_vals - row_mean
+
+            # (2) First expansion: B1, alpha1
+            B1 = torch.sign(centered)
+            alpha1 = centered.abs().mean()
+
+            # (3) Second expansion: B2, alpha2 w.r.t. residual
+            r = centered - alpha1 * B1
+            B2 = torch.sign(r)
+            alpha2 = r.abs().mean()
+
+            # (4) Solve alpha1, alpha2 in closed form with Tikhonov
+            d = float(row_vals.numel())
+            c12 = torch.sum(B1 * B2).item()
+            c1w = torch.sum(centered * B1).item()
+            c2w = torch.sum(centered * B2).item()
+
+            # The system is:
+            #   [ (d + lam)   -c12     ] [ alpha1 ] = [ c1w ]
+            #   [   -c12    (d + lam) ] [ alpha2 ]   [ c2w ]
+            #
+            # Denominator:
+            denom = (d + lam) * (d + lam) - c12 * c12
+
+            if abs(denom) > 1e-12:
+                alpha1_new = ((d + lam) * c1w - c12 * c2w) / denom
+                alpha2_new = ((d + lam) * c2w - c12 * c1w) / denom
+
+                # Constrain to be non-negative
+                alpha1 = max(alpha1_new, 0.0)
+                alpha2 = max(alpha2_new, 0.0)
+#            print(f"[ROW = {row_idx}] : alpha_1 : ", alpha1)
+#            print(f"[ROW = {row_idx}] : alpha_2 : ", alpha2)
+
+            # (5) Final approximation for that row
+            approx_row = row_mean + alpha1 * B1 + alpha2 * B2
+            sum_order[row_idx, row_mask] = approx_row
+
+        return sum_order
+@torch.no_grad()
+def coupled_residual_binarization_stable_v2(
+    x, 
+    mask, 
+    order=2, 
+    lam=1e-5, 
+    max_iters=3
+):
+    """
+    A second version of the stabilized coupled binarization approach, 
+    now with an iterative re-fitting step for the two-expansion case.
+
+    Args:
+      x (tensor): Weight matrix of shape (oc, ic).
+      mask (tensor of bool): True where we binarize, False otherwise.
+      order (int):
+         - 1 => Single-pass binarization: w ~ alpha * sign(w - mean).
+         - >= 2 => Two-expansion binarization with Tikhonov-stabilized 
+                   alpha1, alpha2, plus iterative re-fitting of B2.
+      lam (float): Tikhonov regularization term.
+      max_iters (int): Number of small coordinate-descent iterations 
+                       in the two-expansion step.
+
+    Returns:
+      sum_order (tensor): Binarized approximation of x.
+    """
+    sum_order = torch.zeros_like(x)
+    new_matrix = x.clone() * mask
+
+    global index
+    index += 1
+
+    # ------------- CASE 1: order == 1 -------------
+    if order == 1:
+        # Single-pass binarization, exactly as before
+        residual = new_matrix - sum_order
+        masked_x_tensor = torch.where(
+            mask, residual, 
+            torch.tensor(float('nan'), device=residual.device)
+        )
+
+        # Row-wise mean
+        mean_tensor_all = torch.nanmean(masked_x_tensor, dim=1)
+        mean_tensor_all = torch.where(
+            torch.isnan(mean_tensor_all),
+            torch.zeros_like(mean_tensor_all),
+            mean_tensor_all
+        )
+
+        # Center each row
+        masked_x_tensor = masked_x_tensor - mean_tensor_all[:, None]
+
+        # Row-wise scale
+        scale_tensor_all = torch.nanmean(torch.abs(masked_x_tensor), dim=1)
+        scale_tensor_all = torch.where(
+            torch.isnan(scale_tensor_all),
+            torch.zeros_like(scale_tensor_all),
+            scale_tensor_all
+        )
+
+        # Binarize
+        binary = torch.sign(masked_x_tensor)
+        binary *= scale_tensor_all[:, None]
+        # Add back the row mean
+        binary += mean_tensor_all[:, None]
+
+        sum_order += binary * mask
+        return sum_order
+
+    # ------------- CASE 2: order >= 2 -------------
+    else:
+        """
+        Coupled 2-expansion binarization with Tikhonov regularization 
+        + iterative B2 refitting.
+        """
+        oc, ic = new_matrix.shape
+
+        for row_idx in range(oc):
+            row_mask = mask[row_idx, :]
+            if not torch.any(row_mask):
+                # skip if this row is all unmasked
+                continue
+
+            row_vals = new_matrix[row_idx, row_mask]
+
+            # 1) subtract mean
+            row_mean = row_vals.mean()
+            centered = row_vals - row_mean
+
+            # 2) First expansion (B1, alpha1)
+            B1 = torch.sign(centered)
+            alpha1 = centered.abs().mean()
+
+            # We'll run a small coordinate-descent loop
+            # around (alpha1, alpha2, B2):
+            alpha2 = 0.0
+            B2 = torch.sign(centered)  # dummy init
+            d = float(row_vals.numel())
+
+            for _ in range(max_iters):
+                # (a) Recompute residual after current alpha1,B1
+                r = centered - alpha1 * B1 * 1.0  # copy
+                # (b) Re-fit B2
+                B2 = torch.sign(r)
+
+                # (c) approximate alpha2 from the residual magnitude
+                alpha2_guess = r.abs().mean()
+
+                # (d) Solve alpha1, alpha2 in closed form with Tikhonov:
+                c12 = torch.sum(B1 * B2).item()
+                c1w = torch.sum(centered * B1).item()
+                c2w = torch.sum(centered * B2).item()
+
+                # Tikhonov system:
+                #   [ (d + lam)  -c12      ] [ alpha1 ] = [ c1w ]
+                #   [ -c12      (d + lam) ] [ alpha2 ]   [ c2w ]
+                denom = (d + lam) * (d + lam) - (c12 * c12)
+
+                if abs(denom) > 1e-12:
+                    alpha1_new = ((d + lam)*c1w - c12 * c2w) / denom
+                    alpha2_new = ((d + lam)*c2w - c12 * c1w) / denom
+                    # clamp to nonnegative
+                    alpha1 = max(alpha1_new, 0.0)
+                    alpha2 = max(alpha2_new, 0.0)
+                else:
+                    # fallback
+                    alpha1 = max(c1w / (d + lam), 0.0)
+                    alpha2 = max(alpha2_guess, 0.0)
+
+                # Optionally: if alpha2 is extremely small,
+                # we might break early. But let's just keep
+                # the iteration going to see if we can "revive"
+                # alpha2 in the next pass. No early break.
+
+            # done iteration
+
+            # 3) final approximation for that row
+            approx_row = row_mean + alpha1 * B1 + alpha2 * B2
+            sum_order[row_idx, row_mask] = approx_row
+
+        return sum_order
+@torch.no_grad()
+def coupled_residual_binarization_stable_v3(x, mask, order=2, lam=1e-5):
+    """
+    A single-pass, closed-form binarization with re-centering and Tikhonov stability.
+
+    When order == 1:
+      -> single alpha * sign( (w - row_mean) ).
+    When order >= 2:
+      -> alpha1 * B1 + alpha2 * B2 + row_mean, 
+         with Tikhonov-stabilized closed-form for alpha1, alpha2
+         AND a re-centering step for the second residual pass.
+
+    Args:
+      x (Tensor): the weight matrix of shape (oc, ic)
+      mask (Tensor bool): which entries to binarize (True => use weight)
+      order (int): 
+         1 => single expansion, 
+         >=2 => two expansions with stabilized coupling
+      lam (float): Tikhonov (ridge) regularization parameter.
+
+    Returns:
+      sum_order (Tensor): approximate binarized reconstruction, same shape as x.
+    """
+    # We'll accumulate final approximation here
+    sum_order = torch.zeros_like(x)
+    # Copy & mask out invalid positions
+    new_matrix = x.clone() * mask
+
+    # optional: track usage count
+    global index
+    index += 1
+
+    if order == 1:
+        # ----------------------
+        # Single-pass binarization
+        # ----------------------
+        residual = new_matrix  # or new_matrix - sum_order, but sum_order is 0
+        masked_x_tensor = torch.where(
+            mask, 
+            residual, 
+            torch.tensor(float('nan'), device=residual.device)
+        )
+
+        # Row mean
+        mean_tensor_all = torch.nanmean(masked_x_tensor, dim=1)
+        mean_tensor_all = torch.where(
+            torch.isnan(mean_tensor_all),
+            torch.zeros_like(mean_tensor_all),
+            mean_tensor_all
+        )
+
+        # Subtract row-wise mean
+        masked_x_tensor = masked_x_tensor - mean_tensor_all[:, None]
+
+        # Row-wise scale = average absolute value
+        scale_tensor_all = torch.nanmean(torch.abs(masked_x_tensor), dim=1)
+        scale_tensor_all = torch.where(
+            torch.isnan(scale_tensor_all),
+            torch.zeros_like(scale_tensor_all),
+            scale_tensor_all
+        )
+
+        # Binary sign
+        binary = torch.sign(masked_x_tensor)
+        # Multiply by scale
+        binary *= scale_tensor_all[:, None]
+        # Add row mean
+        binary += mean_tensor_all[:, None]
+
+        # Done
+        sum_order = sum_order + binary * mask
+        return sum_order
+
+    else:
+        # ----------------------
+        # Two-expansion binarization with:
+        #  (1) re-centering each pass 
+        #  (2) Tikhonov for alpha1, alpha2
+        # ----------------------
+        oc, ic = new_matrix.shape
+
+        for row_idx in range(oc):
+            row_mask = mask[row_idx, :]
+            if not torch.any(row_mask):
+                # skip if no valid positions in this row
+                continue
+
+            row_vals = new_matrix[row_idx, row_mask]
+            d = float(row_vals.numel())
+
+            # (1) Row mean
+            row_mean = row_vals.mean()  # not masked_x_tensor => same effect
+            centered = row_vals - row_mean
+
+            # (2) B1, alpha1 from the centered row
+            B1 = torch.sign(centered)
+            alpha1 = centered.abs().mean()
+
+            # (3) Residual r
+            r = centered - alpha1 * B1
+
+            # (3a) Re-center r => reduce correlation
+            r_mean = r.mean()
+            r_centered = r - r_mean
+
+            # B2, alpha2 from the re-centered residual
+            B2 = torch.sign(r_centered)
+            alpha2 = r_centered.abs().mean()
+
+            # (4) Solve alpha1, alpha2 in one shot with Tikhonov
+            #     Minimizing ||(w-mean) - alpha1 B1 - alpha2 B2||^2 + lam (alpha1^2 + alpha2^2).
+            c12 = torch.sum(B1 * B2).item()
+            c1w = torch.sum(centered * B1).item()  # <(w-mean), B1>
+            c2w = torch.sum(centered * B2).item()  # <(w-mean), B2>
+
+            # The system is:
+            #   [d + lam  , -c12      ] [alpha1] = [ c1w ]
+            #   [-c12     , d + lam   ] [alpha2]   [ c2w ]
+            #
+            denom = (d + lam) * (d + lam) - (c12 ** 2)
+            if abs(denom) > 1e-12:
+                alpha1_new = ((d + lam) * c1w - c12 * c2w) / denom
+                alpha2_new = ((d + lam) * c2w - c12 * c1w) / denom
+
+                # clamp to non-negative
+                alpha1 = max(alpha1_new, 0.0)
+                alpha2 = max(alpha2_new, 0.0)
+            else:
+                # fallback if denom is ~0
+                # keep the naive alpha1, alpha2 from above
+                pass
+
+            # (5) Final row reconstruction
+            # w_approx = row_mean + alpha1*B1 + alpha2*B2
+            row_approx = row_mean + alpha1 * B1 + alpha2 * B2
+
+            # place into sum_order
+            sum_order[row_idx, row_mask] = row_approx
+
+        return sum_order
+
+import torch
+
+@torch.no_grad()
+def coupled_residual_binarization_stable_v4(
+    x,
+    mask,
+    order=2,
+    lam=1e-5,
+    corr_damp=0.1
+):
+    """
+    A single-pass, closed-form 2-expansion binarization with:
+      - Re-centering of the row (for B1)
+      - Re-centering of residual (for B2)
+      - Tikhonov (ridge) regularization for stability
+      - Correlation damping to avoid alpha2 => 0 if B1,B2 are strongly correlated
+
+    When order == 1:
+      -> single expansion:  w ~ alpha * sign( (w-row_mean) )
+    When order >= 2:
+      -> w ~ row_mean + alpha1 * B1 + alpha2 * B2
+         with ridge-stabilized solution for alpha1, alpha2
+         plus correlation damping on c12 if c12>0.
+
+    Args:
+      x (Tensor): (oc, ic) weight matrix
+      mask (Bool Tensor): same shape as x, True => valid entries
+      order (int): 
+         - 1 => single expansion
+         - >=2 => two expansions w/ correlation damping
+      lam (float): Tikhonov/ridge strength
+      corr_damp (float): factor in [0,1], how much to scale down positive c12
+
+    Returns:
+      sum_order (Tensor): approximate binarized reconstruction
+    """
+    sum_order = torch.zeros_like(x)
+    new_matrix = x.clone() * mask
+
+    global index
+    index += 1
+
+    if order == 1:
+        # ---------------------------
+        # Single-pass binarization
+        # ---------------------------
+        residual = new_matrix
+        # Only valid positions
+        masked_x_tensor = torch.where(
+            mask,
+            residual,
+            torch.tensor(float('nan'), device=residual.device)
+        )
+
+        # Row-wise mean
+        mean_tensor_all = torch.nanmean(masked_x_tensor, dim=1)
+        mean_tensor_all = torch.where(
+            torch.isnan(mean_tensor_all),
+            torch.zeros_like(mean_tensor_all),
+            mean_tensor_all
+        )
+
+        # Subtract row mean
+        masked_x_tensor = masked_x_tensor - mean_tensor_all[:, None]
+
+        # Row-wise scale = avg abs value
+        scale_tensor_all = torch.nanmean(torch.abs(masked_x_tensor), dim=1)
+        scale_tensor_all = torch.where(
+            torch.isnan(scale_tensor_all),
+            torch.zeros_like(scale_tensor_all),
+            scale_tensor_all
+        )
+
+        # Binary sign
+        binary = torch.sign(masked_x_tensor)
+        # Scale
+        binary *= scale_tensor_all[:, None]
+        # Add row mean
+        binary += mean_tensor_all[:, None]
+
+        sum_order = sum_order + binary * mask
+        return sum_order
+
+    else:
+        # ---------------------------
+        # Two-expansion binarization
+        # with re-centering + Tikhonov + correlation damping
+        # ---------------------------
+        oc, ic = new_matrix.shape
+
+        for row_idx in range(oc):
+            row_mask = mask[row_idx, :]
+            if not torch.any(row_mask):
+                continue
+
+            row_vals = new_matrix[row_idx, row_mask]
+            d = float(row_vals.numel())
+
+            # 1) Row mean
+            row_mean = row_vals.mean()
+            centered = row_vals - row_mean
+
+            # 2) B1, alpha1 from centered
+            B1 = torch.sign(centered)
+            alpha1 = centered.abs().mean()
+
+            # 3) Residual r
+            r = centered - alpha1 * B1
+
+            # 3a) Re-center the residual
+            r_mean = r.mean()
+            r_centered = r - r_mean
+
+            # B2, alpha2 from r_centered
+            B2 = torch.sign(r_centered)
+            alpha2 = r_centered.abs().mean()
+
+            # 4) Tikhonov-stabilized closed-form for alpha1, alpha2
+            c12 = torch.sum(B1 * B2).item()
+            c1w = torch.sum(centered * B1).item()  # <(w-mean), B1>
+            c2w = torch.sum(centered * B2).item()  # <(w-mean), B2>
+
+            # Correlation damping if c12>0
+            if c12 > 0:
+                c12 = c12 * (1.0 - corr_damp)
+
+            # Solve system:
+            #   [d + lam, -c12   ] [alpha1] = [c1w]
+            #   [-c12,   d + lam ] [alpha2]   [c2w]
+            denom = (d + lam) * (d + lam) - (c12**2)
+            if abs(denom) > 1e-12:
+                alpha1_new = ((d + lam) * c1w - c12 * c2w) / denom
+                alpha2_new = ((d + lam) * c2w - c12 * c1w) / denom
+                # clamp non-negative
+                alpha1 = max(alpha1_new, 0.0)
+                alpha2 = max(alpha2_new, 0.0)
+            else:
+                # fallback if near-singular
+                pass
+
+            # 5) Final row approximation
+            row_approx = row_mean + alpha1 * B1 + alpha2 * B2
+            sum_order[row_idx, row_mask] = row_approx
+
+        return sum_order
+
+@torch.no_grad()
+def coupled_residual_binarization_stable_v5(
+    x,
+    mask,
+    order=2,
+    lam=1e-5,
+    corr_damp=0.1
+):
+    """
+    A single-pass or two-pass binarization with various stabilizations.
+    When order == 1: single expansion  w ~ row_mean + alpha * sign(w - row_mean)
+                     now with Tikhonov regularization for alpha.
+    When order >= 2: two expansions   w ~ row_mean + alpha1 B1 + alpha2 B2
+                     with ridge-stabilized solution + correlation damping.
+    ...
+    """
+
+    sum_order = torch.zeros_like(x)
+    new_matrix = x.clone() * mask
+
+    global index
+    index += 1
+
+    if order == 1:
+        # ---------------------------
+        # Single-pass binarization
+        # with Tikhonov for alpha
+        # ---------------------------
+        residual = new_matrix
+
+        masked_x_tensor = torch.where(
+            mask,
+            residual,
+            torch.tensor(float('nan'), device=residual.device)
+        )
+
+        # Row-wise mean
+        mean_tensor_all = torch.nanmean(masked_x_tensor, dim=1)
+        mean_tensor_all = torch.where(
+            torch.isnan(mean_tensor_all),
+            torch.zeros_like(mean_tensor_all),
+            mean_tensor_all
+        )
+
+        # Subtract row mean
+        centered_x = masked_x_tensor - mean_tensor_all[:, None]
+
+        # Row-wise scale WITHOUT Tikhonov would be:
+        #   scale_tensor_all = torch.nanmean(torch.abs(centered_x), dim=1)
+        # Instead we do Tikhonov ridge:
+        #   alpha = (||centered_x||_1) / (d + lam)
+        # where d is the count of valid entries.
+        abs_centered = torch.abs(centered_x)
+        # number of valid entries in each row:
+        valid_counts = torch.sum(~torch.isnan(centered_x), dim=1).float()
+        l1_sums = torch.nan_to_num(abs_centered, 0.0).sum(dim=1)  # sum of absolute
+
+        # Tikhonov scale
+        # NOTE: we clamp at 1e-12 to avoid division by zero if no valid entries
+        denom = valid_counts + lam
+        denom = torch.where(denom < 1e-12, torch.tensor(1e-12, device=denom.device), denom)
+        scale_tensor_all = l1_sums / denom
+
+        # Binary sign
+        binary = torch.sign(centered_x)
+
+        # Multiply by alpha
+        binary *= scale_tensor_all[:, None]
+
+        # Add row mean
+        binary += mean_tensor_all[:, None]
+
+        # Final
+        sum_order = sum_order + torch.where(torch.isnan(masked_x_tensor),
+                                            torch.zeros_like(binary),
+                                            binary)
+        return sum_order
+
+    else:
+        # ---------------------------
+        # Two-expansion binarization
+        # with re-centering + Tikhonov + correlation damping
+        # ---------------------------
+        oc, ic = new_matrix.shape
+
+        for row_idx in range(oc):
+            row_mask = mask[row_idx, :]
+            if not torch.any(row_mask):
+                continue
+
+            row_vals = new_matrix[row_idx, row_mask]
+            d = float(row_vals.numel())
+            if d < 1e-12:
+                continue
+
+            # 1) Row mean
+            row_mean = row_vals.mean()
+            centered = row_vals - row_mean
+
+            # 2) B1, alpha1 from centered
+            B1 = torch.sign(centered)
+            alpha1 = centered.abs().mean()
+
+            # 3) Residual r
+            r = centered - alpha1 * B1
+            # 3a) Re-center the residual
+            r_mean = r.mean()
+            r_centered = r - r_mean
+
+            # B2, alpha2 from r_centered
+            B2 = torch.sign(r_centered)
+            alpha2 = r_centered.abs().mean()
+
+            # 4) Tikhonov-stabilized closed-form for alpha1, alpha2
+            c12 = torch.sum(B1 * B2).item()
+            c1w = torch.sum(centered * B1).item()  # <(w-mean), B1>
+            c2w = torch.sum(centered * B2).item()  # <(w-mean), B2>
+
+            # Correlation damping if c12>0
+            if c12 > 0:
+                c12 = c12 * (1.0 - corr_damp)
+
+            # Solve system:
+            #   [d + lam,   -c12     ] [alpha1] = [c1w]
+            #   [  -c12,    d + lam ] [alpha2]   [c2w]
+            denom = (d + lam) * (d + lam) - (c12**2)
+            if abs(denom) > 1e-12:
+                alpha1_new = ((d + lam) * c1w - c12 * c2w) / denom
+                alpha2_new = ((d + lam) * c2w - c12 * c1w) / denom
+                alpha1 = max(alpha1_new, 0.0)
+                alpha2 = max(alpha2_new, 0.0)
+
+            # 5) Final row approximation
+            row_approx = row_mean + alpha1 * B1 + alpha2 * B2
+            sum_order[row_idx, row_mask] = row_approx
+
+        return sum_order
+@torch.no_grad()
+def coupled_residual_binarization_stable_v6(
+    x,
+    mask,
+    order=2,
+    lam=1e-5,
+    corr_damp=0.1
+):
+    """
+    A single-pass (order==1) or two-expansion (order>=2) binarization with:
+      - Row mean centering
+      - Residual re-centering
+      - Tikhonov (ridge) regularization
+      - Correlation damping
+      - *Sign refinement step* (new in v5) for B2 in two-expansion mode
+
+    When order == 1:
+      -> Single expansion: w ~ alpha * sign( (w - row_mean) )
+
+    When order >= 2:
+      -> w ~ row_mean + alpha1 * B1 + alpha2 * B2
+         *with one sign-refinement pass* for B2 after solving alpha1, alpha2.
+
+    Args:
+      x (Tensor):         (oc, ic) weight matrix
+      mask (Bool Tensor): same shape as x; True => valid entries
+      order (int):        1 => single expansion, >=2 => two expansions
+      lam (float):        Tikhonov/ridge strength
+      corr_damp (float):  factor in [0,1], how much to scale down c12 if c12>0
+
+    Returns:
+      sum_order (Tensor): approximate binarized reconstruction, same shape as x
+    """
+    sum_order = torch.zeros_like(x)
+    new_matrix = x.clone() * mask
+
+    global index
+    index += 1
+
+    # ---------------------------
+    # Case 1: single expansion
+    # ---------------------------
+    if order == 1:
+        residual = new_matrix
+        masked_x_tensor = torch.where(
+            mask,
+            residual,
+            torch.tensor(float('nan'), device=residual.device)
+        )
+
+        # Row-wise mean
+        mean_tensor_all = torch.nanmean(masked_x_tensor, dim=1)
+        mean_tensor_all = torch.where(
+            torch.isnan(mean_tensor_all),
+            torch.zeros_like(mean_tensor_all),
+            mean_tensor_all
+        )
+
+        # Subtract row mean
+        masked_x_tensor = masked_x_tensor - mean_tensor_all[:, None]
+
+        # Row-wise scale = average absolute value
+        scale_tensor_all = torch.nanmean(torch.abs(masked_x_tensor), dim=1)
+        scale_tensor_all = torch.where(
+            torch.isnan(scale_tensor_all),
+            torch.zeros_like(scale_tensor_all),
+            scale_tensor_all
+        )
+
+        # Binary sign
+        binary = torch.sign(masked_x_tensor)
+
+        # Scale
+        binary *= scale_tensor_all[:, None]
+
+        # Add row mean
+        binary += mean_tensor_all[:, None]
+
+        sum_order = sum_order + binary * mask
+        return sum_order
+
+    # ---------------------------
+    # Case 2: two expansions
+    # with sign refinement (v5)
+    # ---------------------------
+    oc, ic = new_matrix.shape
+
+    for row_idx in range(oc):
+        row_mask = mask[row_idx, :]
+        if not torch.any(row_mask):
+            continue
+
+        row_vals = new_matrix[row_idx, row_mask]
+        d = float(row_vals.numel())
+
+        # 1) Row mean
+        row_mean = row_vals.mean()
+        centered = row_vals - row_mean
+
+        # 2) B1, alpha1 from centered
+        B1 = torch.sign(centered)
+        alpha1 = centered.abs().mean()
+
+        # 3) Residual r
+        r = centered - alpha1 * B1
+
+        # 3a) Re-center the residual
+        r_mean = r.mean()
+        r_centered = r - r_mean
+
+        # B2, alpha2 from r_centered
+        B2 = torch.sign(r_centered)
+        alpha2 = r_centered.abs().mean()
+
+        # 4) Tikhonov-stabilized closed-form for alpha1, alpha2
+        #    with correlation damping if c12>0
+        def solve_alphas(B1, B2, c1w, c2w, d, lam, corr_damp):
+            c12 = (B1 * B2).sum().item()
+            if c12 > 0:
+                c12 *= (1.0 - corr_damp)
+            # System:
+            #   [d + lam, -c12   ] [alpha1] = [c1w]
+            #   [-c12,   d + lam ] [alpha2]   [c2w]
+            denom = (d + lam) * (d + lam) - c12 * c12
+            if abs(denom) > 1e-12:
+                alpha1_new = ((d + lam) * c1w - c12 * c2w) / denom
+                alpha2_new = ((d + lam) * c2w - c12 * c1w) / denom
+                return max(alpha1_new, 0.0), max(alpha2_new, 0.0)
+            else:
+                # fallback if near-singular
+                return 0.0, 0.0
+
+        c1w = (centered * B1).sum().item()   # <(w-mean), B1>
+        c2w = (centered * B2).sum().item()   # <(w-mean), B2>
+        alpha1, alpha2 = solve_alphas(B1, B2, c1w, c2w, d, lam, corr_damp)
+
+        # -------------------------
+        # (NEW in v5) Sign-Refinement Step:
+        # After alpha1, alpha2 are updated, recompute B2 from the
+        # *actual* final residual (w-mean - alpha1*B1). Then re-solve.
+        # -------------------------
+        refined_residual = centered - alpha1 * B1
+        # We do not re-add r_mean here; we've effectively folded that in
+        # (since alpha1, alpha2 had already accounted for it).
+        B2 = torch.sign(refined_residual)
+        c2w_refined = (centered * B2).sum().item()  # updated <(w-mean), B2>
+        alpha1, alpha2 = solve_alphas(B1, B2, c1w, c2w_refined, d, lam, corr_damp)
+
+        # 5) Final row approximation
+        row_approx = row_mean + alpha1 * B1 + alpha2 * B2
+        sum_order[row_idx, row_mask] = row_approx
+
+    return sum_order
+
+@torch.no_grad()
+def coupled_residual_binarization_stable_v7(
+    x,
+    mask,
+    order=2,
+    lam=1e-5,
+    corr_damp=0.1
+):
+    """
+    A single-pass (order==1) or two-expansion (order>=2) binarization with:
+      - Row mean centering
+      - Residual re-centering
+      - Tikhonov (ridge) regularization
+      - Correlation damping
+      - Two-way sign refinement (new in v7)
+
+    For two expansions, the steps are:
+      1) Solve alpha1, alpha2 for initial B1, B2
+      2) Refine B2 => re-solve alpha1, alpha2
+      3) Refine B1 => re-solve alpha1, alpha2
+
+    This short coordinate-descent loop typically reduces the final error
+    more robustly than v4/v5, with minimal extra cost.
+
+    Args:
+      x (Tensor):         (oc, ic) weight matrix
+      mask (Bool Tensor): same shape as x; True => valid entries
+      order (int):        1 => single expansion, >=2 => two expansions
+      lam (float):        Tikhonov/ridge strength
+      corr_damp (float):  factor in [0,1], how much to scale down c12 if c12>0
+
+    Returns:
+      sum_order (Tensor): approximate binarized reconstruction, same shape
+    """
+    sum_order = torch.zeros_like(x)
+    new_matrix = x.clone() * mask
+
+    global index
+    index += 1
+
+    # ---------------------------
+    # Case 1: single expansion
+    # ---------------------------
+    if order == 1:
+        residual = new_matrix
+        masked_x_tensor = torch.where(
+            mask,
+            residual,
+            torch.tensor(float('nan'), device=residual.device)
+        )
+
+        # Row-wise mean
+        mean_tensor_all = torch.nanmean(masked_x_tensor, dim=1)
+        mean_tensor_all = torch.where(
+            torch.isnan(mean_tensor_all),
+            torch.zeros_like(mean_tensor_all),
+            mean_tensor_all
+        )
+
+        # Subtract row mean
+        masked_x_tensor = masked_x_tensor - mean_tensor_all[:, None]
+
+        # Row-wise scale = average absolute value
+        scale_tensor_all = torch.nanmean(torch.abs(masked_x_tensor), dim=1)
+        scale_tensor_all = torch.where(
+            torch.isnan(scale_tensor_all),
+            torch.zeros_like(scale_tensor_all),
+            scale_tensor_all
+        )
+
+        # Binary sign
+        binary = torch.sign(masked_x_tensor)
+
+        # Scale
+        binary *= scale_tensor_all[:, None]
+
+        # Add row mean
+        binary += mean_tensor_all[:, None]
+
+        sum_order = sum_order + binary * mask
+        return sum_order
+
+    # ---------------------------
+    # Case 2: two expansions
+    # with two-way sign refinement (v7)
+    # ---------------------------
+    oc, ic = new_matrix.shape
+
+    def solve_alphas(B1, B2, c1w, c2w, d, lam, corr_damp):
+        # correlation
+        c12 = (B1 * B2).sum().item()
+        # if c12 is positive, damp it
+        if c12 > 0:
+            c12 *= (1.0 - corr_damp)
+
+        # Solve system:
+        #   [d + lam, -c12   ] [alpha1] = [c1w]
+        #   [-c12,   d + lam ] [alpha2]   [c2w]
+        denom = (d + lam) * (d + lam) - c12 * c12
+        if abs(denom) > 1e-12:
+            alpha1_new = ((d + lam) * c1w - c12 * c2w) / denom
+            alpha2_new = ((d + lam) * c2w - c12 * c1w) / denom
+            return max(alpha1_new, 0.0), max(alpha2_new, 0.0)
+        else:
+            # fallback if near-singular
+            return 0.0, 0.0
+
+    for row_idx in range(oc):
+        row_mask = mask[row_idx, :]
+        if not torch.any(row_mask):
+            continue
+
+        row_vals = new_matrix[row_idx, row_mask]
+        d = float(row_vals.numel())
+
+        # 1) Row mean
+        row_mean = row_vals.mean()
+        centered = row_vals - row_mean
+
+        # 2) First expansion: B1, alpha1
+        B1 = torch.sign(centered)
+        alpha1 = centered.abs().mean()
+
+        # 3) Residual => B2
+        r = centered - alpha1 * B1
+        r_mean = r.mean()
+        r_centered = r - r_mean
+        B2 = torch.sign(r_centered)
+        alpha2 = r_centered.abs().mean()
+
+        # 4) Solve alpha1, alpha2 (initial)
+        c1w = (centered * B1).sum().item()   # <(w-mean), B1>
+        c2w = (centered * B2).sum().item()   # <(w-mean), B2>
+        alpha1, alpha2 = solve_alphas(B1, B2, c1w, c2w, d, lam, corr_damp)
+
+        # 5) Recompute B2 => re-solve alpha1, alpha2
+        B2 = torch.sign(centered - alpha1 * B1)
+        c2w = (centered * B2).sum().item()
+        alpha1, alpha2 = solve_alphas(B1, B2, c1w, c2w, d, lam, corr_damp)
+
+        # (NEW in v7) 6) Recompute B1 => re-solve alpha1, alpha2
+        B1 = torch.sign(centered - alpha2 * B2)
+        c1w = (centered * B1).sum().item()
+        alpha1, alpha2 = solve_alphas(B1, B2, c1w, c2w, d, lam, corr_damp)
+
+        # 7) Final reconstruction
+        row_approx = row_mean + alpha1 * B1 + alpha2 * B2
+        sum_order[row_idx, row_mask] = row_approx
+
+    return sum_order
+
 class Binarization(nn.Module):
     def __init__(self, weight, method="2bit", groupsize=-1):
         super().__init__()
@@ -547,7 +1671,7 @@ class Binarization(nn.Module):
         elif self.method=="jrb":  # <-- NEW PROPOSAL
             w = joint_residual_binarization(w, mask, iters=order)
         elif self.method=="crb":  # <-- NEW PROPOSAL
-            w = coupled_residual_binarization(w, mask, order=order)
+            w = coupled_residual_binarization_stable_v7(w, mask, order=order)
         elif self.method=="bhor": # T
             w = balanced_high_order_residual(w, mask, order=order)
         elif self.method=="orb": # Orthogonal Residual Binarization

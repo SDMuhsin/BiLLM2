@@ -207,6 +207,38 @@ def quant_sequential(model, dataloader, dev):
     
     llama braq     wikitext  : pp18
 
+    -- above measures used incorrect crb --
+
+    opt1.3B braq ptb                        : ppl 73.81
+    opt1.3B crb  ptb                        : ppl 87.83
+    opt1.3B crb_stable  ptb                 : ppl 82
+    opt1.3B crb_stable_v2  ptb              : ppl 81
+    opt1.3B crb_stable_v3  ptb              : ppl 75
+    opt1.3B crb_stable_v4  ptb              : ppl 73.28
+    opt1.3B crb_stable_v4 cordamp0.2 ptb    : ppl 83 
+    opt1.3B crb_stable_v5           ptb     : ppl 65.59 [!]
+    opt1.3B crb_stable_v6           ptb     : ppl 63.11 [!]
+
+    opt1.3B braq wikitext2                  : ppl 61.275
+    opt1.3B crb  wikitext2                  : ppl 50.70
+    opt1.3B crb_stable_v6  wikitext2        : ppl 53.13 [!]
+    
+    opt2.7B crb  wikitext2                  : ppl 71.49
+
+    opt2.7B braq wikitext2                  : ppl 61.275 ?
+    opt2.7B crb  wikitext2                  : ppl 44
+    opt2.7B crb_stable_v6    wikitext       : ppl 67 [-]
+    opt2.7B crb_stable_v7    wikitext       : ppl 47.34
+
+
+    opt6.7B braq ptb                        : ppl 35 
+    opt6.7B crbv6 ptb                       : ppl 35 [-]
+    opt6.7B crbv7 ptb                       : ppl 34.9
+
+    opt6.7b braq             wikitext       : ppl35.84
+    opt6.7b crb_stable_v6    wikitext       : ppl36.429  [-]
+    opt6.7b crb_stable_v7    wikitext       : ppl
+
 '''
 
 if __name__ == "__main__":

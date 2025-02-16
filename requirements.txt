@@ -1,4 +1,4 @@
-torch==2.5.1
+torch~=2.5.1
 transformers==4.35.0
 datasets==2.14.6
 numpy
