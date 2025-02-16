@@ -5,7 +5,7 @@ export HF_HOME="./downloads"
 
 # Define arrays for models and datasets
 models=(
-    "facebook/opt-1.3B" "facebook/opt-2.7B" "facebook/opt-6.7b" 
+    "facebook/opt-1.3b" "facebook/opt-2.7b" "facebook/opt-6.7b" 
     "facebook/opt-13b" "facebook/opt-30b" "facebook/opt-66b"
     #"huggyllama/llama-7b" "huggyllama/llama-13b" "huggyllama/llama-30b"#"huggyllama/llama-65b"
 )
