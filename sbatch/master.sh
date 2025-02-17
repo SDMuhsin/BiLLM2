@@ -19,7 +19,7 @@ for dataset in wikitext2 ptb; do
                 --cpus-per-task=1 \
                 --gpus=1 \
                 --mem=128000M \
-                --time=7-00:00 \
+                --time=3-00:00 \
                 --chdir=/scratch/sdmuhsin/BiLLM2 \
                 --output=${technique}-${model_filename}-%N-%j.out \
                 --wrap="
