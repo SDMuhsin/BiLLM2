@@ -1645,6 +1645,129 @@ def coupled_residual_binarization_stable_v7(
         sum_order[row_idx, row_mask] = row_approx
 
     return sum_order
+@torch.no_grad()
+def adaptive_high_order_residual(x, mask, order=2):
+    """
+    Adaptive High Order Residual Binarization.
+    
+    This function approximates the input tensor x (after applying mask)
+    as a sum of binary components over the specified number of orders.
+    
+    For each order and for each channel, it computes two candidate scale factors:
+    
+      - Candidate 1: Uses the mean absolute deviation of the channel’s residual 
+                     (as in braq), i.e. α₁ = nanmean(|r - m|).
+      
+      - Candidate 2: Uses the variance-based estimator, i.e. 
+                     α₂ = sqrt(nanmean((r - m)²)) * sqrt(2/π),
+                     which is optimal if the residual is Gaussian.
+                     
+    For each channel the candidate that yields the lower reconstruction error 
+    is chosen adaptively. This approach minimizes quantization error under 
+    non-ideal residual distributions while introducing no extra bits (the only 
+    stored per-channel parameter remains the scale factor).
+    
+    When order = 1, the weights are represented as W ≈ α * B,
+    and when order = 2, W ≈ α₁ * B₁ + α₂ * B₂, as required.
+    
+    Parameters:
+      x (torch.Tensor): The weight tensor.
+      mask (torch.Tensor): A binary mask of the same shape as x.
+      order (int): The number of residual passes (default 2).
+    
+    Returns:
+      torch.Tensor: The binarized approximation of x.
+    """
+    sum_order = torch.zeros_like(x)
+    new_matrix = x.clone() * mask
+    global index
+    index += 1
+    # Prepare a NaN tensor for masked-out positions (ensuring device/dtype consistency)
+    nan_tensor = torch.tensor(float('nan'), device=x.device, dtype=x.dtype)
+    
+    for od in range(order):
+        # Compute the current residual
+        residual = new_matrix - sum_order
+        # Apply the mask: invalid positions become NaN
+        masked_x_tensor = torch.where(mask, residual, nan_tensor)
+        
+        # Compute channel-wise mean (serves as bias compensation)
+        channel_mean = torch.nanmean(masked_x_tensor, dim=1)
+        channel_mean = torch.where(torch.isnan(channel_mean), torch.zeros_like(channel_mean), channel_mean)
+        
+        # Center the residual by subtracting the channel mean
+        centered = masked_x_tensor - channel_mean[:, None]
+        
+        # Candidate 1: Scale via mean absolute deviation (as in braq)
+        candidate_scale1 = torch.nanmean(torch.abs(centered), dim=1)
+        candidate_scale1 = torch.where(torch.isnan(candidate_scale1), torch.zeros_like(candidate_scale1), candidate_scale1)
+        
+        # Candidate 2: Scale via variance; for a Gaussian, E[|x|] = std * sqrt(2/π)
+        candidate_std = torch.sqrt(torch.nanmean(centered**2, dim=1))
+        candidate_scale2 = candidate_std * math.sqrt(2/math.pi)
+        candidate_scale2 = torch.where(torch.isnan(candidate_scale2), torch.zeros_like(candidate_scale2), candidate_scale2)
+        
+        # Both candidates use the same binary pattern (the sign of the centered residual)
+        binary = torch.sign(centered)
+        
+        # Reconstruct the candidate approximations
+        rec1 = channel_mean[:, None] + candidate_scale1[:, None] * binary
+        rec2 = channel_mean[:, None] + candidate_scale2[:, None] * binary
+        
+        # Compute per-channel reconstruction errors for both candidates
+        error1 = torch.nanmean((masked_x_tensor - rec1)**2, dim=1)
+        error2 = torch.nanmean((masked_x_tensor - rec2)**2, dim=1)
+        
+        # Select the candidate with lower error for each channel
+        choose_candidate1 = (error1 <= error2)
+        final_scale = torch.where(choose_candidate1, candidate_scale1, candidate_scale2)
+        
+        # Compute the final binary component for this iteration
+        final_component = channel_mean[:, None] + final_scale[:, None] * binary
+        
+        # Update the accumulated representation (note: multiplication by mask preserves original sparsity)
+        sum_order = sum_order + final_component * mask
+        
+    return sum_order
+
+@torch.no_grad()
+def hybrid_coupled_coordinate_residual(x, mask, order=2, lam=1e-5, corr_damp=0.1):
+    """
+    Hybrid binarization: runs both the stable coupled two-expansion method and braq,
+    then selects the one with the lower quantization error.
+    
+    For order == 1 (non-salient regions), both methods reduce to a single expansion,
+    while for order >= 2 (salient regions), the stable method applies re-centering,
+    Tikhonov stabilization, and correlation damping.
+    
+    Args:
+      x (Tensor): (oc, ic) weight matrix.
+      mask (Bool Tensor): same shape as x; True indicates valid entries.
+      order (int): 
+         - 1 => single expansion: w ~ alpha * sign(w - row_mean)
+         - >=2 => two expansions: w ~ row_mean + alpha1 * B1 + alpha2 * B2.
+      lam (float): Tikhonov (ridge) regularization strength for stability.
+      corr_damp (float): Factor in [0,1] to damp positive correlations (c12).
+      
+    Returns:
+      Tensor: The approximate binarized reconstruction chosen from the method
+              with the lower quantization error (squared L2 norm over valid entries).
+    """
+    # Compute approximation using braq (original high_order_residual method)
+    approx_braq = high_order_residual(x, mask, order=order)
+    
+    # Compute approximation using the stable coupled residual binarization v4
+    approx_cabr = coupled_residual_binarization_stable_v4(x, mask, order=order, lam=lam, corr_damp=corr_damp)
+    
+    # Compute the squared quantization error only over valid (masked) entries.
+    error_braq = torch.sum(((x - approx_braq) * mask) ** 2)
+    error_cabr = torch.sum(((x - approx_cabr) * mask) ** 2)
+    
+    # Choose the method with the lower error.
+    if error_braq <= error_cabr:
+        return approx_braq
+    else:
+        return approx_cabr
 
 class Binarization(nn.Module):
     def __init__(self, weight, method="2bit", groupsize=-1):
@@ -1672,6 +1795,10 @@ class Binarization(nn.Module):
             w = joint_residual_binarization(w, mask, iters=order)
         elif self.method=="crb":  # <-- NEW PROPOSAL
             w = coupled_residual_binarization_stable_v7(w, mask, order=order)
+        elif self.method=="new":  # <-- NEW PROPOSAL
+            w = hybrid_coupled_coordinate_residual(w, mask, order=order)
+            #w = adaptive_high_order_residual(w, mask, order=order)
+
         elif self.method=="bhor": # T
             w = balanced_high_order_residual(w, mask, order=order)
         elif self.method=="orb": # Orthogonal Residual Binarization

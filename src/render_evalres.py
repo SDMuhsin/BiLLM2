@@ -12,7 +12,7 @@ def main():
         "facebook/opt-13b", "facebook/opt-30b", "facebook/opt-66b"
     ]
     allowed_datasets = ["wikitext2", "ptb"]
-    allowed_techniques = ["braq", "crb"]
+    allowed_techniques = ["braq", "crb", "new"]
 
     # Load the JSON file
     try:
@@ -34,23 +34,20 @@ def main():
         else:
             stripped = filepath
 
-        # Instead of chopping off directory parts, we use the entire string.
         # Remove the trailing ".json"
         if stripped.endswith(".json"):
             stripped = stripped[:-5]
 
-        # Now split the remaining string by underscores.
         # Expected format: "facebook/opt-1.3b_ptb_braq_128_hessian"
         parts = stripped.split("_")
         if len(parts) != 5:
-            # Skip if the file name is not formatted as expected.
-            continue
+            continue  # Skip if the file name is not formatted as expected.
 
-        model_str = parts[0]            # e.g., "facebook/opt-1.3b"
-        dataset_str = parts[1]          # e.g., "ptb" or "wikitext2"
+        model_str = parts[0]              # e.g., "facebook/opt-1.3b"
+        dataset_str = parts[1]            # e.g., "ptb" or "wikitext2"
         technique_str = parts[2].lower()  # e.g., "braq" or "crb"
-        groupsize_str = parts[3]        # e.g., "128"
-        metric_str = parts[4].lower()   # e.g., "hessian"
+        groupsize_str = parts[3]          # e.g., "128"
+        metric_str = parts[4].lower()     # e.g., "hessian"
 
         # Validate groupsize and salient metric
         try:
@@ -78,18 +75,27 @@ def main():
         results[key_group][technique_str] = metric_value
 
     # Print the results in a clean table format.
-    header = "{:<20} {:<10} {:<15} {:<15}".format("Model", "Dataset", "braq", "crb")
-    print(header)
-    print("-" * len(header))
+    # Build header dynamically based on allowed techniques.
+    header_items = ["Model", "Dataset"] + allowed_techniques
+    # Define column widths: 20 for model, 10 for dataset, 15 for each technique.
+    col_widths = [20, 10] + [15] * len(allowed_techniques)
+    fmt_parts = []
+    for width in col_widths:
+        fmt_parts.append("{:<" + str(width) + "}")
+    row_fmt = " ".join(fmt_parts)
+    header_line = row_fmt.format(*header_items)
+    print(header_line)
+    print("-" * len(header_line))
+
     for model in allowed_models:
         for dataset in allowed_datasets:
             key_group = (model, dataset)
             if key_group in results:
-                braq_val = results[key_group].get("braq", "N/A")
-                crb_val = results[key_group].get("crb", "N/A")
-                print("{:<20} {:<10} {:<15} {:<15}".format(
-                    model, dataset, braq_val, crb_val))
-                
+                row_items = [model, dataset]
+                for technique in allowed_techniques:
+                    row_items.append(results[key_group].get(technique, "N/A"))
+                print(row_fmt.format(*row_items))
+
 if __name__ == "__main__":
     main()
 
