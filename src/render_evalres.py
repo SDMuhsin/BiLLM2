@@ -27,38 +27,30 @@ def main():
     results = {}
 
     for filepath, metric_value in data.items():
-        # The keys are like:
-        # "./output/facebook/opt-1.3B_wikitext2_braq_128_hessian.json"
-        # First, remove the known prefix (it might be "./output/" or "./outputs/")
-        if filepath.startswith("./output/"):
-            stripped = filepath[len("./output/"):]
-        elif filepath.startswith("./outputs/"):
-            stripped = filepath[len("./outputs/"):]
+        # Remove the known prefix "./output/"
+        prefix = "./output/"
+        if filepath.startswith(prefix):
+            stripped = filepath[len(prefix):]
         else:
             stripped = filepath
 
-        # The filename (last part) is in the format:
-        # "facebook/opt-1.3B_wikitext2_braq_128_hessian.json"
-        # If there is a directory separator, remove it:
-        last_slash = stripped.rfind("/")
-        if last_slash != -1:
-            filename = stripped[last_slash+1:]
-        else:
-            filename = stripped
+        # Instead of chopping off directory parts, we use the entire string.
+        # Remove the trailing ".json"
+        if stripped.endswith(".json"):
+            stripped = stripped[:-5]
 
-        parts = filename.split("_")
+        # Now split the remaining string by underscores.
+        # Expected format: "facebook/opt-1.3b_ptb_braq_128_hessian"
+        parts = stripped.split("_")
         if len(parts) != 5:
             # Skip if the file name is not formatted as expected.
             continue
 
-        # Extract the different parts:
-        model_str = parts[0]           # e.g., "facebook/opt-1.3B"
-        dataset_str = parts[1]         # e.g., "wikitext2"
+        model_str = parts[0]            # e.g., "facebook/opt-1.3b"
+        dataset_str = parts[1]          # e.g., "ptb" or "wikitext2"
         technique_str = parts[2].lower()  # e.g., "braq" or "crb"
-        groupsize_str = parts[3]       # e.g., "128"
-        metric_str = parts[4]
-        if metric_str.endswith(".json"):
-            metric_str = metric_str[:-5]  # remove trailing ".json"
+        groupsize_str = parts[3]        # e.g., "128"
+        metric_str = parts[4].lower()   # e.g., "hessian"
 
         # Validate groupsize and salient metric
         try:
@@ -66,10 +58,10 @@ def main():
         except ValueError:
             continue
 
-        if groupsize_int != groupsize_param or metric_str.lower() != salient_metric:
+        if groupsize_int != groupsize_param or metric_str != salient_metric:
             continue
 
-        # Normalize strings for comparison (lower-case)
+        # Normalize for comparison
         model_str = model_str.lower()
         dataset_str = dataset_str.lower()
 
