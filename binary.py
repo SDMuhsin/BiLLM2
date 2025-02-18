@@ -1757,7 +1757,7 @@ def hybrid_coupled_coordinate_residual(x, mask, order=2, lam=1e-5, corr_damp=0.1
     approx_braq = high_order_residual(x, mask, order=order)
     
     # Compute approximation using the stable coupled residual binarization v4
-    approx_cabr = coupled_residual_binarization_stable_v4(x, mask, order=order, lam=lam, corr_damp=corr_damp)
+    approx_cabr = coupled_residual_binarization_stable_v7(x, mask, order=order, lam=lam, corr_damp=corr_damp)
     
     # Compute the squared quantization error only over valid (masked) entries.
     error_braq = torch.sum(((x - approx_braq) * mask) ** 2)
@@ -1796,8 +1796,8 @@ class Binarization(nn.Module):
         elif self.method=="crb":  # <-- NEW PROPOSAL
             w = coupled_residual_binarization_stable_v7(w, mask, order=order)
         elif self.method=="new":  # <-- NEW PROPOSAL
-            w = hybrid_coupled_coordinate_residual(w, mask, order=order)
-            #w = adaptive_high_order_residual(w, mask, order=order)
+            #w = hybrid_coupled_coordinate_residual(w, mask, order=order)
+            w = adaptive_high_order_residual(w, mask, order=order)
 
         elif self.method=="bhor": # T
             w = balanced_high_order_residual(w, mask, order=order)
