@@ -1824,68 +1824,78 @@ def hybrid_coupled_coordinate_residual(x, mask, order=2, lam=1e-5, corr_damp=0.1
     else:
         return approx_cabr
 
+
 @torch.no_grad()
-def bitflip_residual(x, mask, order=2):
+def bit_flip_pass(w, mask, order=2):
     """
-    High-order binarization with a simple bit-flip refinement step.
-    - x: full weight matrix
-    - mask: which entries are valid (salient or non-salient segments)
-    - order: 1 or 2 (or more), number of recursive residual steps
+    Implements an order-aware bit-flipping binarization technique.
+    
+    w: (oc, ic) block of weights.
+    mask: Boolean mask of valid entries.
+    order: 1 for single-pass, 2 for residual-based refinement.
+    
+    Returns: The binarized weight matrix with optimized bit flips.
+    Complexity: O(N).
     """
-    sum_order = torch.zeros_like(x)
-    new_matrix = x.clone()
-    new_matrix = new_matrix * mask  # zero out invalid entries
+    # Order = 1 (direct binarization)
+    active_w = w[mask]
+    if active_w.numel() == 0:
+        return torch.zeros_like(w)
 
-    for _ in range(order):
-        # 1) Compute the current residual
-        residual = new_matrix - sum_order
-        
-        # 2) Row-wise mean removal, then row-wise scale factor
-        masked_x_tensor = torch.where(mask, residual, torch.tensor(float('nan'), device=residual.device))
-        mean_tensor_all = torch.nanmean(masked_x_tensor, dim=1)
-        mean_tensor_all = torch.where(torch.isnan(mean_tensor_all), torch.zeros_like(mean_tensor_all), mean_tensor_all)
-        masked_x_tensor = masked_x_tensor - mean_tensor_all[:, None]
-        
-        scale_tensor_all = torch.nanmean(torch.abs(masked_x_tensor), dim=1)
-        scale_tensor_all = torch.where(torch.isnan(scale_tensor_all), torch.zeros_like(scale_tensor_all), scale_tensor_all)
-        
-        # 3) Initial sign
-        sign_tensor = torch.sign(masked_x_tensor)
-        
-        # 4) Bit flipping refinement (row-wise)
-        #    Flip sign_tensor[i,j] if flipping it reduces local squared error
-        for i in range(sign_tensor.size(0)):
-            # Only process columns where mask==True
-            row_mask = mask[i, :]
-            # Local offset + scale for row i
-            alpha = scale_tensor_all[i]
-            # Residual after offset
-            row_residual = masked_x_tensor[i, :]
-            row_sign = sign_tensor[i, :]
+    alpha_1 = active_w.abs().mean()
+    B_1 = torch.sign(w) * mask
+    R_1 = w - alpha_1 * B_1
 
-            # Single pass over the row
-            for j in range(row_sign.size(0)):
-                if row_mask[j]:
-                    # old_error^2: (r_j - alpha * b_j)^2
-                    old_error = row_residual[j] - alpha * row_sign[j]
-                    # new_error^2: (r_j - alpha * (-b_j))^2
-                    new_error = row_residual[j] + alpha * row_sign[j]  # flipping sign => + alpha*b_j
-                    # Flip if it yields strictly less squared error
-                    if (new_error * new_error) < (old_error * old_error):
-                        row_sign[j] = -row_sign[j]
-            
-            sign_tensor[i, :] = row_sign
-        
-        # 5) Build the reconstructed binarized output for this round
-        out = sign_tensor * scale_tensor_all[:, None]
-        out = out + mean_tensor_all[:, None]
-        
-        # 6) Update sum_order (accumulate the binarized approximation)
-        sum_order = sum_order + out * mask
+    # Single-pass bit flipping for order=1
+    for row_idx in range(w.shape[0]):
+        row_mask = mask[row_idx]
+        row_r = R_1[row_idx]
+        row_b = B_1[row_idx]
 
-    return sum_order
+        active_indices = torch.where(row_mask)[0]
+        for col_idx in active_indices:
+            if row_b[col_idx] > 0 and row_r[col_idx] < -alpha_1:
+                row_b[col_idx] = -1.0
+                row_r[col_idx] += 2.0 * alpha_1
+            elif row_b[col_idx] < 0 and row_r[col_idx] > alpha_1:
+                row_b[col_idx] = 1.0
+                row_r[col_idx] -= 2.0 * alpha_1
 
+        B_1[row_idx] = row_b
+        R_1[row_idx] = row_r
 
+    # If order = 1, return the refined first binarization
+    if order == 1:
+        return alpha_1 * B_1
+
+    # Order = 2 (residual binarization)
+    R_2 = w - alpha_1 * B_1  # First-order residual
+    active_r = R_2[mask]
+    alpha_2 = active_r.abs().mean() if active_r.numel() > 0 else 0.0
+
+    B_2 = torch.sign(R_2) * mask
+    R_2 -= alpha_2 * B_2  # New residual
+
+    # Single-pass bit flipping for order=2
+    for row_idx in range(w.shape[0]):
+        row_mask = mask[row_idx]
+        row_r = R_2[row_idx]
+        row_b = B_2[row_idx]
+
+        active_indices = torch.where(row_mask)[0]
+        for col_idx in active_indices:
+            if row_b[col_idx] > 0 and row_r[col_idx] < -alpha_2:
+                row_b[col_idx] = -1.0
+                row_r[col_idx] += 2.0 * alpha_2
+            elif row_b[col_idx] < 0 and row_r[col_idx] > alpha_2:
+                row_b[col_idx] = 1.0
+                row_r[col_idx] -= 2.0 * alpha_2
+
+        B_2[row_idx] = row_b
+        R_2[row_idx] = row_r
+
+    # Final binarized weight: sum of two binarized components
+    return alpha_1 * B_1 + alpha_2 * B_2
 
 class Binarization(nn.Module):
     def __init__(self, weight, method="2bit", groupsize=-1):
@@ -1915,7 +1925,7 @@ class Binarization(nn.Module):
             w = coupled_residual_binarization_stable_v7(w, mask, order=order)
         elif self.method=="new":  # <-- NEW PROPOSAL
             #w = hybrid_coupled_coordinate_residual(w, mask, order=order)
-            w = bitflip_residual(w, mask, order=order)
+            w = bit_flip_pass(w, mask, order=order)
         elif self.method == 'ahor':
             w = adaptive_high_order_residual_v2(w,mask,order=order)
         elif self.method=="bhor": # T
