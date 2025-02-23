@@ -9,7 +9,9 @@ def main():
     # Allowed models, datasets, and techniques
     allowed_models = [
         "facebook/opt-1.3b", "facebook/opt-2.7b", "facebook/opt-6.7b",
-        "facebook/opt-13b", "facebook/opt-30b", "facebook/opt-66b"
+        "facebook/opt-13b", "facebook/opt-30b", "facebook/opt-66b",
+        "huggyllama/llama-7b", "huggyllama/llama-13b",
+        "huggyllama/llama-30b", "huggyllama/llama-65b",
     ]
     allowed_datasets = ["wikitext2", "ptb"]
     allowed_techniques = ["braq", "crb", "new"]
