@@ -1645,6 +1645,156 @@ def coupled_residual_binarization_stable_v7(
         sum_order[row_idx, row_mask] = row_approx
 
     return sum_order
+
+@torch.no_grad()
+def coupled_residual_binarization_stable_v8(
+    x,
+    mask,
+    order=2,
+    lam=1e-5,
+    corr_damp=0.1
+):
+    """
+    'v8' extends the two-expansion approach by also re-optimizing the row offset
+    mu in the coordinate-descent loop. This yields a more accurate final
+    approximation without adding any new bits or parameters (the offset is
+    the same single row-mean float we already had).
+
+    We keep:
+      - Tikhonov (ridge) stabilization
+      - Correlation damping
+      - Two-way sign refinement for B1, B2
+      - New: offset (mu) re-solved in closed-form.
+
+    Args:
+      x (Tensor):         (oc, ic) weight matrix
+      mask (Bool Tensor): same shape as x, True => valid entries
+      order (int):        1 => single expansion, >=2 => two expansions
+      lam (float):        Tikhonov/ridge strength
+      corr_damp (float):  factor in [0,1], how much to scale down positive c12
+
+    Returns:
+      sum_order (Tensor): approximate binarized reconstruction
+    """
+    sum_order = torch.zeros_like(x)
+    new_matrix = x.clone() * mask
+
+    global index
+    index += 1
+
+    # ---------------------------
+    # Single expansion (unchanged)
+    # ---------------------------
+    if order == 1:
+        residual = new_matrix
+        masked_x_tensor = torch.where(
+            mask,
+            residual,
+            torch.tensor(float('nan'), device=residual.device)
+        )
+        mean_tensor_all = torch.nanmean(masked_x_tensor, dim=1)
+        mean_tensor_all = torch.where(
+            torch.isnan(mean_tensor_all),
+            torch.zeros_like(mean_tensor_all),
+            mean_tensor_all
+        )
+        masked_x_tensor = masked_x_tensor - mean_tensor_all[:, None]
+        scale_tensor_all = torch.nanmean(torch.abs(masked_x_tensor), dim=1)
+        scale_tensor_all = torch.where(
+            torch.isnan(scale_tensor_all),
+            torch.zeros_like(scale_tensor_all),
+            scale_tensor_all
+        )
+        binary = torch.sign(masked_x_tensor)
+        binary *= scale_tensor_all[:, None]
+        binary += mean_tensor_all[:, None]
+        sum_order = sum_order + binary * mask
+        return sum_order
+
+    # --------------------------------------
+    # Two expansions + offset refinement (v8)
+    # --------------------------------------
+    oc, ic = new_matrix.shape
+
+    def solve_alphas(B1, B2, w_centered, d, lam, corr_damp):
+        # correlation
+        c12 = (B1 * B2).sum().item()
+        # if c12 > 0, damp it
+        if c12 > 0:
+            c12 *= (1.0 - corr_damp)
+
+        # <(w - mu), B1>, <(w - mu), B2>
+        c1w = (w_centered * B1).sum().item()
+        c2w = (w_centered * B2).sum().item()
+
+        # Solve system:
+        #   [d + lam, -c12   ] [alpha1] = [c1w]
+        #   [-c12,   d + lam ] [alpha2]   [c2w]
+        denom = (d + lam) * (d + lam) - c12 * c12
+        if abs(denom) > 1e-12:
+            alpha1_new = ((d + lam) * c1w - c12 * c2w) / denom
+            alpha2_new = ((d + lam) * c2w - c12 * c1w) / denom
+            alpha1_new = max(alpha1_new, 0.0)
+            alpha2_new = max(alpha2_new, 0.0)
+            return alpha1_new, alpha2_new
+        else:
+            return 0.0, 0.0
+
+    for row_idx in range(oc):
+        row_mask = mask[row_idx, :]
+        if not torch.any(row_mask):
+            continue
+
+        row_vals = new_matrix[row_idx, row_mask]
+        d = float(row_vals.numel())
+
+        # 1) Initial offset = row mean
+        mu = row_vals.mean()
+        w_centered = row_vals - mu
+
+        # 2) B1, alpha1 from w_centered
+        B1 = torch.sign(w_centered)
+        alpha1 = w_centered.abs().mean()
+
+        # 3) B2 from residual (re-centered)
+        r1 = w_centered - alpha1 * B1
+        r1_mean = r1.mean()
+        B2 = torch.sign(r1 - r1_mean)
+        alpha2 = (r1 - r1_mean).abs().mean()
+
+        # 4) Solve alpha1, alpha2 (initial)
+        alpha1, alpha2 = solve_alphas(B1, B2, w_centered, d, lam, corr_damp)
+
+        # 5) Sign refinement for B2
+        B2 = torch.sign(w_centered - alpha1 * B1)
+        alpha1, alpha2 = solve_alphas(B1, B2, w_centered, d, lam, corr_damp)
+
+        # 6) Sign refinement for B1 (two-way)
+        B1 = torch.sign(w_centered - alpha2 * B2)
+        alpha1, alpha2 = solve_alphas(B1, B2, w_centered, d, lam, corr_damp)
+
+        # 7) (NEW in v8) Refine offset mu, then re-solve alpha + sign
+        #    a) mu = mean( w_i - alpha1 B_{1i} - alpha2 B_{2i} )
+        w_res = row_vals - alpha1 * B1 - alpha2 * B2
+        new_mu = w_res.mean()
+        # b) Re-center for alpha solves
+        w_centered = row_vals - new_mu
+
+        # Re-solve alpha1, alpha2 with updated mu
+        alpha1, alpha2 = solve_alphas(B1, B2, w_centered, d, lam, corr_damp)
+        
+        # c) Optional final sign refinements 
+        B2 = torch.sign(w_centered - alpha1 * B1)
+        alpha1, alpha2 = solve_alphas(B1, B2, w_centered, d, lam, corr_damp)
+        B1 = torch.sign(w_centered - alpha2 * B2)
+        alpha1, alpha2 = solve_alphas(B1, B2, w_centered, d, lam, corr_damp)
+
+        # 8) Final reconstruction for that row
+        row_approx = new_mu + alpha1 * B1 + alpha2 * B2
+        sum_order[row_idx, row_mask] = row_approx
+
+    return sum_order
+
 @torch.no_grad()
 def adaptive_high_order_residual(x, mask, order=2):
     """
@@ -1923,6 +2073,8 @@ class Binarization(nn.Module):
             w = joint_residual_binarization(w, mask, iters=order)
         elif self.method=="crb":  # <-- NEW PROPOSAL
             w = coupled_residual_binarization_stable_v7(w, mask, order=order)
+        elif self.method=="crbv8":  # <-- NEW PROPOSAL
+            w = coupled_residual_binarization_stable_v8(w, mask, order=order)
         elif self.method=="new":  # <-- NEW PROPOSAL
             #w = hybrid_coupled_coordinate_residual(w, mask, order=order)
             w = bit_flip_pass(w, mask, order=order)
