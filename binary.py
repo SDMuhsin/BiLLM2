@@ -2046,7 +2046,101 @@ def bit_flip_pass(w, mask, order=2):
 
     # Final binarized weight: sum of two binarized components
     return alpha_1 * B_1 + alpha_2 * B_2
+@torch.no_grad()
+def coupled_residual_binarization_stable_v9(
+    x,
+    mask,
+    order=2,
+    lam=1e-5,
+    corr_damp=0.1
+):
+    """
+    'v9' - A minimal single-pass approach that extends braq by a single
+    closed-form coupling of alpha1, alpha2 after determining B1,B2.
 
+    - If order=1: w ~ alpha * sign(w)
+    - If order>=2: w ~ alpha1 * B1 + alpha2 * B2
+      where B1=sign(w), B2=sign(r) with r=(w - alpha1^0*B1),
+      then solve alpha1, alpha2 jointly in closed form with Tikhonov (lam)
+      and optional correlation damping.
+
+    No iterative refinement or row-mean shifting. This is simpler yet
+    typically outperforms braq because alpha1 is re-optimized after
+    seeing B2, rather than locked to alpha1^0.
+
+    Args:
+      x (Tensor):         (oc, ic) weight matrix
+      mask (Bool Tensor): same shape as x
+      order (int):        1 => single expansion, >=2 => two expansions
+      lam   (float):      Tikhonov ridge for alpha1^2+alpha2^2
+      corr_damp(float):   factor in [0,1]; scale down correlation if c12>0
+
+    Returns:
+      sum_order(Tensor):  same shape as x; final approximation
+    """
+    sum_order = torch.zeros_like(x)
+    new_matrix = x.clone() * mask
+
+    global index
+    index += 1
+
+    if order == 1:
+        # Single expansion: w ~ alpha * sign(w)
+        # This is the same standard approach.
+        masked_x = torch.where(mask, new_matrix, torch.tensor(float('nan'), device=x.device))
+        scale = torch.nanmean(torch.abs(masked_x), dim=1)  # row-wise
+        scale = torch.where(torch.isnan(scale), torch.zeros_like(scale), scale)
+        sign_mat = torch.sign(masked_x)
+        sign_mat *= scale[:, None]
+        sum_order = sign_mat.where(mask, torch.zeros_like(sign_mat))
+        return sum_order
+
+    # Two expansions
+    oc, ic = new_matrix.shape
+
+    for row_idx in range(oc):
+        row_mask = mask[row_idx, :]
+        if not torch.any(row_mask):
+            continue
+
+        w_row = new_matrix[row_idx, row_mask]
+        d = float(w_row.numel())
+
+        # 1) B1 = sign(w), alpha1^0 = mean(|w|)
+        B1 = torch.sign(w_row)
+        alpha1_0 = w_row.abs().mean()
+
+        # 2) Residual => B2 = sign(r)
+        R = w_row - alpha1_0 * B1
+        B2 = torch.sign(R)
+        alpha2_0 = R.abs().mean()  # just for reference, not final
+
+        # 3) Solve alpha1, alpha2 in one shot with Tikhonov + correlation damping
+        c11 = d + lam  # effectively <B1,B1> + lam
+        c22 = d + lam  # effectively <B2,B2> + lam
+        c12 = (B1 * B2).sum().item()
+        if c12 > 0:
+            c12 *= (1.0 - corr_damp)
+        c1w = (B1 * w_row).sum().item()
+        c2w = (B2 * w_row).sum().item()
+
+        # 2x2 system
+        denom = c11 * c22 - c12 * c12
+        if abs(denom) < 1e-12:
+            # fallback
+            alpha1, alpha2 = alpha1_0, alpha2_0
+        else:
+            alpha1 = ( c1w*c22 - c12*c2w ) / denom
+            alpha2 = ( c2w*c11 - c12*c1w ) / denom
+            alpha1 = max(alpha1, 0.0)
+            alpha2 = max(alpha2, 0.0)
+
+        # 4) Reconstruct final row
+        #    w_approx = alpha1*B1 + alpha2*B2
+        w_approx = alpha1 * B1 + alpha2 * B2
+        sum_order[row_idx, row_mask] = w_approx
+
+    return sum_order
 class Binarization(nn.Module):
     def __init__(self, weight, method="2bit", groupsize=-1):
         super().__init__()
@@ -2075,6 +2169,8 @@ class Binarization(nn.Module):
             w = coupled_residual_binarization_stable_v7(w, mask, order=order)
         elif self.method=="crbv8":  # <-- NEW PROPOSAL
             w = coupled_residual_binarization_stable_v8(w, mask, order=order)
+        elif self.method=="crbv9":  # <-- NEW PROPOSAL
+            w = coupled_residual_binarization_stable_v9(w, mask, order=order)
         elif self.method=="new":  # <-- NEW PROPOSAL
             #w = hybrid_coupled_coordinate_residual(w, mask, order=order)
             w = bit_flip_pass(w, mask, order=order)
