@@ -2141,6 +2141,99 @@ def coupled_residual_binarization_stable_v9(
         sum_order[row_idx, row_mask] = w_approx
 
     return sum_order
+@torch.no_grad()
+def coupled_residual_binarization_stable_v10(
+    x,
+    mask,
+    order=2,
+    eps=1e-12
+):
+    """
+    A streamlined binarization method with zero offsets and a
+    single-pass approach for stability.
+
+    If order=1:
+      - w ~ alpha * sign(w), using average magnitude for alpha.
+
+    If order>=2:
+      - 1) B1=sign(w), alpha1=mean(|w|)
+      - 2) r=w-alpha1*B1, B2=sign(r), alpha2=mean(|r|)
+      - 3) 'Scale Sharing': let alphaTotal=mean(|w|) for that row,
+         then rescale alpha1' and alpha2' so alpha1'+alpha2'=alphaTotal.
+
+    This ensures neither alpha gets excessively large or vanishingly small,
+    while remaining extremely simple (one pass, no offset, no iteration).
+
+    Args:
+      x (Tensor):         shape (oc, ic)
+      mask (Bool Tensor): shape (oc, ic), True => valid entries
+      order (int):        1 => single expansion, >=2 => two expansions
+      eps (float):        small constant to avoid divisions by zero
+
+    Returns:
+      sum_order (Tensor): same shape as x, binarized approximation
+    """
+    sum_order = torch.zeros_like(x)
+    # We'll operate on a masked copy
+    new_matrix = x.clone() * mask
+
+    # We'll do row-by-row. Each row we consider only the "True" positions in mask.
+    oc, ic = new_matrix.shape
+
+    if order == 1:
+        # Single expansion
+        for row_idx in range(oc):
+            row_mask = mask[row_idx, :]
+            if not torch.any(row_mask):
+                continue
+
+            row_vals = new_matrix[row_idx, row_mask]  # all valid positions
+            # alpha = average magnitude
+            alpha = row_vals.abs().mean()
+            # sign
+            B = torch.sign(row_vals)
+            # final reconstruction
+            row_approx = alpha * B
+            sum_order[row_idx, row_mask] = row_approx
+
+    else:
+        # Two expansions + scale sharing
+        for row_idx in range(oc):
+            row_mask = mask[row_idx, :]
+            if not torch.any(row_mask):
+                continue
+
+            row_vals = new_matrix[row_idx, row_mask]
+            d = float(row_vals.numel())
+
+            # Step A: B1, alpha1
+            B1 = torch.sign(row_vals)
+            alpha1 = row_vals.abs().mean()
+
+            # Step B: Residual -> B2, alpha2
+            r = row_vals - alpha1 * B1
+            B2 = torch.sign(r)
+            alpha2 = r.abs().mean()
+
+            # Step C: scale sharing
+            # total scale = average magnitude of original row
+            alpha_total = row_vals.abs().mean()
+
+            alpha_sum = alpha1 + alpha2
+            if alpha_sum < eps:
+                # edge case: if alpha1+alpha2 is basically 0, just do alpha_total for alpha1
+                alpha1_prime = alpha_total
+                alpha2_prime = 0.0
+            else:
+                alpha1_prime = alpha_total * (alpha1 / alpha_sum)
+                alpha2_prime = alpha_total * (alpha2 / alpha_sum)
+
+            # final reconstruction
+            row_approx = alpha1_prime * B1 + alpha2_prime * B2
+            sum_order[row_idx, row_mask] = row_approx
+
+    return sum_order
+
 class Binarization(nn.Module):
     def __init__(self, weight, method="2bit", groupsize=-1):
         super().__init__()
@@ -2171,6 +2264,9 @@ class Binarization(nn.Module):
             w = coupled_residual_binarization_stable_v8(w, mask, order=order)
         elif self.method=="crbv9":  # <-- NEW PROPOSAL
             w = coupled_residual_binarization_stable_v9(w, mask, order=order)
+        elif self.method=="crbv10":  # <-- NEW PROPOSAL
+            w = coupled_residual_binarization_stable_v10(w, mask, order=order)
+
         elif self.method=="new":  # <-- NEW PROPOSAL
             #w = hybrid_coupled_coordinate_residual(w, mask, order=order)
             w = bit_flip_pass(w, mask, order=order)
