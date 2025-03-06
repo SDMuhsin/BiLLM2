@@ -5,7 +5,7 @@ echo "Beginning run.py sbatch script submissions."
 # Iterate over datasets
 for dataset in wikitext2 ptb; do
     # Iterate over models
-    for model in "facebook/opt-66b" "huggyllama/llama-65b"; do  #"facebook/opt-66b"; do
+    for model in "facebook/opt-66b"; do  #"facebook/opt-66b"; doi"huggyllama/llama-65b" 
         # Iterate over techniques
         for technique in braq crb; do
 
