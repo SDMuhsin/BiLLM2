@@ -5,9 +5,9 @@ echo "Beginning run.py sbatch script submissions."
 # Iterate over datasets
 for dataset in wikitext2 ptb; do
     # Iterate over models
-    for model in "huggyllama/llama-30b"; do #"facebook/opt-30b"; do #"facebook/opt-66b"; do
+    for model in  "facebook/opt-13b" "facebook/opt-30b"; do #"facebook/opt-66b"; do "huggyllama/llama-30b" "huggyllama/llama-7b" "huggyllama/llama-13b" 
         # Iterate over techniques
-        for technique in braq crb; do
+        for technique in xnor rtn; do
 
             # Remove slash from model name for the output filename
             model_filename=${model//\//}
@@ -19,7 +19,7 @@ for dataset in wikitext2 ptb; do
                 --cpus-per-task=1 \
                 --gpus=1 \
                 --mem=128000M \
-                --time=2-00:00 \
+                --time=7-00:00 \
                 --chdir=/scratch/sdmuhsin/BiLLM2 \
                 --output=${technique}-${model_filename}-${dataset}-%N-%j.out \
                 --wrap="
