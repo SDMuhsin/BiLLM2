@@ -36,7 +36,7 @@ def get_model(model_name):
         else:
             raise ValueError("Unsupported model type")
         
-        torch.save(model, model_path)
+        #torch.save(model, model_path)
         print(f"Model saved to {model_path}")
     
     return model
