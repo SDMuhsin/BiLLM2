@@ -8,7 +8,7 @@ from high_quant import HighQuantizer
 from low_quant import LowQuantizer
 from modelutils import find_layers
 
-downloads_dir = "./../downloads"
+downloads_dir = "./downloads"
 def get_model(model_name):
     def skip(*args, **kwargs):
         pass
@@ -188,7 +188,7 @@ def quant_sequential(model, dataloader, dev):
         inps, outs = outs, inps
     if args.plot:
         title = f"{args.model}_{args.dataset}_{args.low_quant_method}_{args.low_frac}_{args.high_bit}"
-        torch.save([plt_x, plt_error], "../output/" + title.replace("/", "_") + ".pkl")
+        torch.save([plt_x, plt_error], "./output/" + title.replace("/", "_") + ".pkl")
         import matplotlib.pyplot as plt
 
         plt.plot(plt_error)
@@ -284,7 +284,7 @@ if __name__ == "__main__":
 
     device = "cuda:0"
     save_title = f"{args.model}_{args.dataset}_{args.low_quant_method}_{args.low_frac}_{args.high_bit}_{args.groupsize}_{args.salient_metric}"
-    save_file = "../output/" + save_title.replace("/", "_") + ".pt"
+    save_file = "./output/" + save_title.replace("/", "_") + ".pt"
     if args.load_quantized:
         model = get_model(save_file)
         model.eval()

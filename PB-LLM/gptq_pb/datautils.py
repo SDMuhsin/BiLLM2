@@ -11,7 +11,7 @@ def set_seed(seed):
     np.random.seed(seed)
     torch.random.manual_seed(seed)
 
-downloads_dir = "../../downloads"
+downloads_dir = "./downloads"
 
 '''
 Generate tokenizer and return it to preload datasets by converting them to embedded vectors instead of natural words
@@ -146,7 +146,7 @@ def get_c4_old(nsamples, seed, seqlen, model, tokenizer):
     return trainloader, valenc
 
 def get_loaders(name, nsamples=128, seed=0, seqlen=2048, model=''):
-    cache_file=f'../../downloads/DOWNLOAD_{name}_{nsamples}_{seed}_{seqlen}_{model}.pt'
+    cache_file=f'./downloads/DOWNLOAD_{name}_{nsamples}_{seed}_{seqlen}_{model}.pt'
     try:
         return torch.load(cache_file)
     except:
