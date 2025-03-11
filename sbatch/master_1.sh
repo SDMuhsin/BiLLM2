@@ -5,7 +5,7 @@ echo "Beginning run.py sbatch script submissions."
 # Iterate over datasets
 for dataset in ptb; do
     # Iterate over models
-    for model in "facebook/opt-1.3b"; do #"facebook/opt-2.7b" "facebook/opt-6.7b"; do # "facebook/opt-30b" "facebook/opt-66b"; do "huggyllama/llama-7b" "huggyllama/llama-13b" 
+    for model in "facebook/opt-1.3b" "facebook/opt-2.7b" "facebook/opt-6.7b"; do # "facebook/opt-30b" "facebook/opt-66b"; do "huggyllama/llama-7b" "huggyllama/llama-13b" 
         # Iterate over techniques
         for technique in xnor; do
 
@@ -19,7 +19,7 @@ for dataset in ptb; do
                 --cpus-per-task=1 \
                 --gpus=1 \
                 --mem=64000M \
-                --time=1-00:00 \
+                --time=3-00:00 \
                 --chdir=/scratch/sdmuhsin/BiLLM2 \
                 --output=${technique}-${model_filename}-${dataset}-%N-%j.out \
                 --wrap="
@@ -31,7 +31,7 @@ for dataset in ptb; do
                     echo 'Environment loaded'
                     which python3
                     export PYTHONPATH=\"\$PYTHONPATH:\$(pwd)\"
-		    python3 ./PB-LLM/gptq_pb/run.py $model $dataset $technique --low_frac 0.5 --high_bit 8 --blocksize 128 --salient_metric hessian
+		    python3 ./PB-LLM/gptq_pb/run.py $model $dataset $technique --low_frac 0.9 --high_bit 8 --blocksize 128 --salient_metric hessian
                 "
         done
     done

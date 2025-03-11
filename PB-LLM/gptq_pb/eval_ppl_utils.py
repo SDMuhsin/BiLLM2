@@ -7,7 +7,7 @@ import json
 import os
 
 
-EVAL_SAVE_FILE = "../../output/GLOBAL_PPL.json"
+EVAL_SAVE_FILE = "./output/GLOBAL_PPL.json"
 
 def save_ppl_result(save_title, ppl_value):
     """Safely save the PPL result into a shared JSON file with file locking."""
