@@ -5,7 +5,7 @@ echo "Beginning run.py sbatch script submissions."
 # Iterate over datasets
 for dataset in ptb; do # wikitext2; do
     # Iterate over models
-    for model in "facebook/opt-1.3b" "facebook/opt-2.7b" "facebook/opt-6.7b"; do # "facebook/opt-30b" "facebook/opt-66b"; do "huggyllama/llama-7b" "huggyllama/llama-13b" 
+    for model in "facebook/opt-13b" "facebook/opt-30b"; do # "facebook/opt-30b" "facebook/opt-66b"; do "huggyllama/llama-7b" "huggyllama/llama-13b" 
         # Iterate over techniques
         for bits in 2 3 4; do
 
@@ -19,7 +19,7 @@ for dataset in ptb; do # wikitext2; do
                 --cpus-per-task=1 \
                 --gpus=1 \
                 --mem=64000M \
-                --time=1-00:00 \
+                --time=3-00:00 \
                 --chdir=/scratch/sdmuhsin/BiLLM2 \
                 --output=$baseline-${model_filename}-${dataset}-%N-%j.out \
                 --wrap="
