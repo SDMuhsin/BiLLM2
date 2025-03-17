@@ -18,7 +18,7 @@ for dataset in ptb; do # wikitext2; do
                 --ntasks-per-node=1 \
                 --cpus-per-task=1 \
                 --gpus=1 \
-                --mem=64000M \
+                --mem=128000M \
                 --time=3-00:00 \
                 --chdir=/scratch/sdmuhsin/BiLLM2 \
                 --output=$baseline-${model_filename}-${dataset}-%N-%j.out \

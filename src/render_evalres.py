@@ -14,7 +14,7 @@ def main():
         "huggyllama/llama-30b", "huggyllama/llama-65b",
     ]
     allowed_datasets = ["wikitext2", "ptb"]
-    allowed_techniques = ["rtn42","gptq2",'xnor',"braq", "crb"]
+    allowed_techniques = ["rtn2","gptq2",'xnor',"braq", "crb"]
 
     # Load the JSON file
     try:
