@@ -112,7 +112,7 @@ def llama_eval(model, testenc, dev,  dataset: str, log_wandb: bool = False, save
     ppl = torch.exp(torch.stack(nlls).sum() / (nsamples * model.seqlen))
     print(f"Perplexity: {ppl.item():3f}")
 
-    save_ppl_result( f"../../output/{save_title}.json" ,ppl) 
+    save_ppl_result( f"./output/{save_title}.json" ,ppl) 
     model.config.use_cache = use_cache
 
 @torch.no_grad()
@@ -209,6 +209,6 @@ def opt_eval(model, testenc, dev, dataset: str, log_wandb: bool = False, save_ti
     print(f"Perplexity: {ppl.item():3f}")
     print({f'{dataset}/perplexity': ppl.item()})
 	
-    save_ppl_result(f"../../output/{save_title}.json",ppl)
+    save_ppl_result(f"./output/{save_title}.json",ppl)
 
     model.config.use_cache = use_cache

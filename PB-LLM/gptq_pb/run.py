@@ -316,11 +316,11 @@ if __name__ == "__main__":
         if "opt" in args.model:
             from eval_ppl_utils import opt_eval
 
-            opt_eval(model, testloader, device, dataset, args.log_wandb)
+            opt_eval(model, testloader, device, dataset, args.log_wandb,save_title=save_title)
         elif "huggyllama" in args.model:
             from eval_ppl_utils import llama_eval
 
-            llama_eval(model, testloader, device, dataset, args.log_wandb)
+            llama_eval(model, testloader, device, dataset, args.log_wandb,save_title=save_title)
 
     if args.save:
         save_path = os.path.dirname(save_file)

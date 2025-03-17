@@ -1,5 +1,9 @@
 env
 **pycache**
+./gptq/**pycache**
+./gptq/**output**
 cache
 output
 downloads
+**output**
+
