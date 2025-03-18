@@ -169,14 +169,21 @@ def get_loaders(
     except:
         pass
 
-    tokenizer = get_tokenizer(model)
     if 'wikitext2' in name:
-        return get_wikitext2(nsamples, seed, seqlen, model)
+        loaders get_wikitext2(nsamples, seed, seqlen, model)
     if 'ptb' in name:
         if 'new' in name:
-            return get_ptb_new(nsamples, seed, seqlen, model)
-        return get_ptb(nsamples, seed, seqlen, model)
+            loaders = get_ptb_new(nsamples, seed, seqlen, model)
+        loaders = get_ptb(nsamples, seed, seqlen, model)
     if 'c4' in name:
         if 'new' in name:
-            return get_c4_new(nsamples, seed, seqlen, model)
-        return get_c4(nsamples, seed, seqlen, model)
+            loaders = get_c4_new(nsamples, seed, seqlen, model)
+        loaders = get_c4(nsamples, seed, seqlen, model)
+
+    directory='/'.join(cache_file.split('/')[:-1])
+    if not os.path.exists(directory):
+        os.makedirs(directory)
+    torch.save(loaders,cache_file)
+    return loaders
+
+
