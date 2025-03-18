@@ -163,6 +163,13 @@ def get_c4_new(nsamples, seed, seqlen, model):
 def get_loaders(
     name, nsamples=128, seed=0, seqlen=2048, model=''
 ):
+    cache_file=f'./downloads/DOWNLOAD_{name}_{nsamples}_{seed}_{seqlen}_{model}.pt'
+    try:
+        return torch.load(cache_file)
+    except:
+        pass
+
+    tokenizer = get_tokenizer(model)
     if 'wikitext2' in name:
         return get_wikitext2(nsamples, seed, seqlen, model)
     if 'ptb' in name:
