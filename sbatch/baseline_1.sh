@@ -21,7 +21,7 @@ for dataset in wikitext2 ptb; do # wikitext2; do
                 --mem=64000M \
                 --time=1-00:00 \
                 --chdir=/scratch/sdmuhsin/BiLLM2 \
-                --output=$baseline-${model_filename}-${dataset}-%N-%j.out \
+                --output=baseline${bits}-${model_filename}-${dataset}-%N-%j.out \
                 --wrap="
                     export TRANSFORMERS_CACHE=\"./downloads\"
                     export HF_HOME=\"./downloads\"
