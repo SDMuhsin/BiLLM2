@@ -3,7 +3,7 @@
 echo "Beginning run.py sbatch script submissions."
 
 # Iterate over datasets
-for dataset in ptb; do
+for dataset in wikitext2; do
     # Iterate over models
     for model in "facebook/opt-1.3b"; do
         # Iterate over techniques
