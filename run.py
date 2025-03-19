@@ -391,7 +391,7 @@ if __name__ == "__main__":
            
             ''' FOR ABLATION STUDY '''
             # Define the path to the JSON file
-            results_path = "./results/ablation_results.json"
+            results_path = "./output/ablation_results.json"
 
             # Ensure the results directory exists
             os.makedirs(os.path.dirname(results_path), exist_ok=True)
