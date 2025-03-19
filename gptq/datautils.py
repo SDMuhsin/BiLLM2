@@ -170,7 +170,7 @@ def get_loaders(
         pass
 
     if 'wikitext2' in name:
-        loaders get_wikitext2(nsamples, seed, seqlen, model)
+        loaders = get_wikitext2(nsamples, seed, seqlen, model)
     if 'ptb' in name:
         if 'new' in name:
             loaders = get_ptb_new(nsamples, seed, seqlen, model)
