@@ -6,7 +6,8 @@ import torch.nn as nn
 from bigptq import BRAGPTQ
 from binary import Binarization
 from modelutils import find_layers
-
+import json
+import os
 
 
 downloads_dir = "./downloads"
@@ -143,6 +144,8 @@ def quant_sequential(model, dataloader, dev):
                 subset[name].weight,
                 method=args.low_quant_method,
                 groupsize=groupsize,
+                corr_damp = args.corr_damp,
+                lam = args.lam
             ) # Quantizer for each module of layer i
             gptq[name] = BRAGPTQ(
                 subset[name],
@@ -327,7 +330,17 @@ if __name__ == "__main__":
     parser.add_argument(
         "--just_download", action="store_true"
     )
-
+    
+    parser.add_argument(
+        "--corr_damp", type = float, default = 0.1
+    )
+    parser.add_argument(
+        "--lam", type = float, default = 1e-5
+    )
+    parser.add_argument(
+        "--skip_ppl_save",
+        action="store_true"
+    )
     args = parser.parse_args()
     groupsize = args.blocksize
 
@@ -357,12 +370,14 @@ if __name__ == "__main__":
         print("quantization time:", time.time() - tick, "s")
 
 
-
+    '''
     if args.save:
         save_path = os.path.dirname(save_file)
         if not os.path.exists(save_path):
             os.makedirs(save_path)
         model.save_pretrained(save_file)
+    '''
+
 
     for dataset in [args.dataset]:#["wikitext2", "ptb", "c4"]:
         dataloader, testloader = get_loaders(
@@ -372,7 +387,31 @@ if __name__ == "__main__":
         if "opt" in args.model:
             from eval_ppl_utils import opt_eval
             
-            opt_eval(model, testloader, device, dataset, args.log_wandb, save_title)
+            ppl = opt_eval(model, testloader, device, dataset, args.log_wandb, save_title, save = not args.skip_ppl_save )
+           
+            ''' FOR ABLATION STUDY '''
+            # Define the path to the JSON file
+            results_path = "./results/ablation_results.json"
+
+            # Ensure the results directory exists
+            os.makedirs(os.path.dirname(results_path), exist_ok=True)
+
+            # Load existing results or initialize an empty dict if file doesn't exist or is empty
+            try:
+                with open(results_path, "r") as f:
+                    results = json.load(f)
+            except (FileNotFoundError, json.JSONDecodeError):
+                results = {}
+
+            # Create the key and update the results with the new perplexity value
+            key = f"{args.model}_{args.dataset}_{args.low_quant_method}_{groupsize}_{args.salient_metric}_{args.corr_damp}_{args.lam}"
+            results[key] = ppl
+
+            # Save the updated results back to the JSON file
+            with open(results_path, "w") as f:
+                json.dump(results, f, indent=4)
+
+
         elif "llama" in args.model:
             from eval_ppl_utils import llama_eval
 

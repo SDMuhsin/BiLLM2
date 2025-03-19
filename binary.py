@@ -441,7 +441,6 @@ def joint_residual_binarization(x, mask, iters=3):
 @torch.no_grad()
 def D_coupled_residual_binarization(x, mask, order=2):
 
-    print("Order = ", order)
     """
     Performs a two-binary-expansion approximation (like braq) but
     co-optimizes the scale factors alpha_1, alpha_2 in closed form.
@@ -1503,6 +1502,7 @@ def coupled_residual_binarization_stable_v7(
     lam=1e-5,
     corr_damp=0.1
 ):
+    print(corr_damp,lam)
     """
     A single-pass (order==1) or two-expansion (order>=2) binarization with:
       - Row mean centering
@@ -2235,7 +2235,7 @@ def coupled_residual_binarization_stable_v10(
     return sum_order
 
 class Binarization(nn.Module):
-    def __init__(self, weight, method="2bit", groupsize=-1):
+    def __init__(self, weight, method="2bit", groupsize=-1, corr_damp = 0.1, lam = 1e-5 ):
         super().__init__()
         oc,ic=weight.shape
         if groupsize==-1:
@@ -2247,6 +2247,10 @@ class Binarization(nn.Module):
         # Add defaults for the (2) mest robust method
         self.kappa = 1.0  # Robustness parameter
         self.order = 2    # Number of residual expansions
+
+        self.corr_damp = corr_damp
+        self.lam = lam
+
     def quantize(self, w, mask, order=2, groupi=0):
         if self.method=="xnor":
             w_mean = self.mean[groupi]
@@ -2259,7 +2263,7 @@ class Binarization(nn.Module):
         elif self.method=="jrb":  # <-- NEW PROPOSAL
             w = joint_residual_binarization(w, mask, iters=order)
         elif self.method=="crb":  # <-- NEW PROPOSAL
-            w = coupled_residual_binarization_stable_v7(w, mask, order=order)
+            w = coupled_residual_binarization_stable_v7(w, mask, order=order, corr_damp = self.corr_damp, lam = self.lam)
         elif self.method=="crbv8":  # <-- NEW PROPOSAL
             w = coupled_residual_binarization_stable_v8(w, mask, order=order)
         elif self.method=="crbv9":  # <-- NEW PROPOSAL

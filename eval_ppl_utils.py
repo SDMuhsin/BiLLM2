@@ -114,9 +114,10 @@ def llama_eval(model, testenc, dev,  dataset: str, log_wandb: bool = False, save
 
     save_ppl_result( f"./output/{save_title}.json" ,ppl) 
     model.config.use_cache = use_cache
-
+    
+    return ppl.item()
 @torch.no_grad()
-def opt_eval(model, testenc, dev, dataset: str, log_wandb: bool = False, save_title = 'UNNAMED_OPT'):
+def opt_eval(model, testenc, dev, dataset: str, log_wandb: bool = False, save_title = 'UNNAMED_OPT', save = True):
 
     print('Evaluating ...')
 
@@ -209,6 +210,10 @@ def opt_eval(model, testenc, dev, dataset: str, log_wandb: bool = False, save_ti
     print(f"Perplexity: {ppl.item():3f}")
     print({f'{dataset}/perplexity': ppl.item()})
 	
-    save_ppl_result(f"./output/{save_title}.json",ppl)
-
+    if (save):
+        save_ppl_result(f"./output/{save_title}.json",ppl)
+    else:
+        print(f"Did not save ppl")
     model.config.use_cache = use_cache
+
+    return ppl.item()
