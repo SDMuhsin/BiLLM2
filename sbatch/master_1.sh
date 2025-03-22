@@ -31,12 +31,13 @@ for dataset in ptb wikitext2; do
                     echo 'Environment loaded'
                     which python3
                     export PYTHONPATH=\"\$PYTHONPATH:\$(pwd)\"
-		    python3 ./PB-LLM/gptq_pb/run.py $model $dataset $technique --low_frac 0.9 --high_bit 8 --blocksize 128 --salient_metric hessian
+		    python3 run.py $model $dataset $technique --blocksize 128 --salient_metric hessian --device=\"cuda\"
+
                 "
         done
     done
 done
 
 echo "All jobs submitted."
-#python3 run.py $model $dataset $technique --blocksize 128 --salient_metric hessian --device=\"cuda\"
+#		    python3 ./PB-LLM/gptq_pb/run.py $model $dataset $technique --low_frac 0.9 --high_bit 8 --blocksize 128 --salient_metric hessian
  
