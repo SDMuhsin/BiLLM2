@@ -7,7 +7,7 @@ for dataset in ptb wikitext2; do
     # Iterate over models
     for model in "facebook/opt-1.3b" "facebook/opt-2.7b" "facebook/opt-6.7b"; do # "facebook/opt-30b" "facebook/opt-66b"; do "huggyllama/llama-7b" "huggyllama/llama-13b" 
         # Iterate over techniques
-        for technique in xnor; do
+        for technique in crbog; do
 
             # Remove slash from model name for the output filename
             model_filename=${model//\//}

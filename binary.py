@@ -633,8 +633,6 @@ def coupled_residual_binarization(x, mask, order=2):
             # 5) Final approximation for that row
             approx_row = row_mean + alpha1 * B1 + alpha2 * B2
             
-            print(f"[ROW = {row_idx}] : alpha_1 : ", alpha1)
-            print(f"[ROW = {row_idx}] : alpha_2 : ", alpha2)
             # Put it back into sum_order
             sum_order[row_idx, row_mask] = approx_row
 
@@ -2262,6 +2260,8 @@ class Binarization(nn.Module):
             w = high_order_residual(w, mask, order=order)
         elif self.method=="jrb":  # <-- NEW PROPOSAL
             w = joint_residual_binarization(w, mask, iters=order)
+        elif self.method == 'crbog':
+            w = coupled_residual_binarization(w, mask, order=order) 
         elif self.method=="crb":  # <-- NEW PROPOSAL
             w = coupled_residual_binarization_stable_v7(w, mask, order=order, corr_damp = self.corr_damp, lam = self.lam)
         elif self.method=="crbv8":  # <-- NEW PROPOSAL
