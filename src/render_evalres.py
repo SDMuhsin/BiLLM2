@@ -95,8 +95,14 @@ def main():
             if key_group in results:
                 row_items = [model, dataset]
                 for technique in allowed_techniques:
-                    row_items.append(results[key_group].get(technique, "N/A"))
+                    value = results[key_group].get(technique, "N/A")
+                    if isinstance(value, (int, float)):
+                        row_items.append("{:.2f}".format(value))
+                    else:
+                        row_items.append(value)
                 print(row_fmt.format(*row_items))
+
+
 
 if __name__ == "__main__":
     main()
