@@ -268,7 +268,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "low_quant_method",
         type=str,
-        choices=['rtn',"xnor", "sign", "no", "2bit", "4bit", "prune", "braq",'robq','mestrobq','medianbraq','orb','whor','arb','bhor','jrb','crb','odr','new','ahor','crbv8','crbv9','crbv10','crbog'],
+        choices=['fp16','rtn',"xnor", "sign", "no", "2bit", "4bit", "prune", "braq",'robq','mestrobq','medianbraq','orb','whor','arb','bhor','jrb','crb','odr','new','ahor','crbv8','crbv9','crbv10','crbog'],
         help="quantization method; `xnor` is the method using XNOR to adapt hardware calculation; `prune` is the method used in sparseGPTQ; braq is the method used in BiLLM",
     )
     parser.add_argument("--load_quantized", action="store_true")
@@ -366,7 +366,7 @@ if __name__ == "__main__":
         if(args.just_download):
             print(f"Just download flag set, exiting")
             exit()
-        quant_sequential(model, dataloader, device)
+        #quant_sequential(model, dataloader, device)
         print("quantization time:", time.time() - tick, "s")
 
 

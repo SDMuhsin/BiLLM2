@@ -6,3 +6,4 @@ sentencepiece
 exceptiongroup
 #lm_eva
 #bitsandbytes
+matplotlib
